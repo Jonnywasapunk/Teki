@@ -8,7 +8,7 @@ import { useState, useEffect } from "react";
 
 // ── SUPABASE CONFIG ── Replace these two values after creating your project ──
 const SUPABASE_URL  = "https://sozhjtedrwlvusmlxxer.supabase.co";
-const SUPABASE_ANON = "sb_publishable_RH0UgInEhBLXCne-r5v2zQ_YqhKKozp";
+const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNvemhqdGVkcndsdnVzbWx4eGVyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQyMTQwMzgsImV4cCI6MjA4OTc5MDAzOH0.3vvWidY-3u8rdnx7TYjPmTkQuy1lb8taRybz8OteBfU";
 
 // Minimal Supabase client (no npm needed — works via CDN import in Vite)
 // If using Vite: npm install @supabase/supabase-js
