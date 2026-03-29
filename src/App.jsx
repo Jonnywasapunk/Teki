@@ -522,8 +522,10 @@ const Tasks = ({ tasks, setTasks, user }) => {
   };
 
   const toggleDone = async (t) => {
+    // Update UI instantly
+    setTasks(prev => prev.map(x => x.id === t.id ? { ...x, done: !t.done } : x));
+    // Then sync to Supabase in background
     await supabase.from("tasks").update({ done: !t.done }).eq("id", t.id);
-    setTasks(prev => prev.map(x => x.id === t.id ? { ...x, done: !x.done } : x));
   };
 
   const deleteTask = async (id) => {
@@ -1075,14 +1077,44 @@ export default function Teki() {
 
   useEffect(() => {
     const { data } = supabase.auth.getSession();
-    if (data?.session?.user) setUser(data.session.user);
-    else if (data?.session?.access_token) setUser(data.session);
+    const session = data?.session;
+    if (!session) { setAppLoading(false); return; }
+
+    // Always extract the user object correctly
+    const sessionUser = session.user || (session.access_token ? session : null);
+    if (!sessionUser) { setAppLoading(false); return; }
+
+    // Refresh the token if it's going to expire within 10 minutes
+    const exp = session.expires_at || (session.access_token
+      ? JSON.parse(atob(session.access_token.split(".")[1])).exp
+      : 0);
+    const expiresIn = exp - Math.floor(Date.now() / 1000);
+    if (expiresIn < 600) {
+      // Token nearly expired — refresh it
+      fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON },
+        body: JSON.stringify({ refresh_token: session.refresh_token }),
+      }).then(r => r.json()).then(refreshed => {
+        if (refreshed.access_token) {
+          supabase.auth._saveSession ? supabase.auth._saveSession(refreshed) : null;
+          try { localStorage.setItem("teki_session", JSON.stringify(refreshed)); } catch {}
+          setUser(refreshed.user || refreshed);
+        } else {
+          // Refresh failed — force re-login
+          localStorage.removeItem("teki_session");
+          setAppLoading(false);
+        }
+      }).catch(() => setAppLoading(false));
+    } else {
+      setUser(sessionUser);
+    }
     setAppLoading(false);
   }, []);
 
   useEffect(() => {
     if (!user) return;
-    const uid = user.id || user.user?.id;
+    const uid = user.id || user.user?.id || user.sub;
     if (!uid) return;
     // Own data
     supabase.from("tasks").select("*").eq("user_id", uid).order("created_at", { ascending: false }).then(({ data }) => setTasks(data || []));
@@ -1128,7 +1160,12 @@ export default function Teki() {
 
   if (!user) return <><style>{globalStyles}</style><Login onAuth={setUser} /></>;
 
-  const normalizedUser = user?.user || (user?.id ? user : null) || user;
+  const normalizedUser = (() => {
+    if (!user) return null;
+    if (user.id && user.email) return user; // already a user object
+    if (user.user?.id) return user.user;     // nested under .user
+    return user;
+  })();
 
   const content = (
     <>
