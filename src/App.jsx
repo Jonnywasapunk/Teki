@@ -169,6 +169,13 @@ const Icon = ({ name, size = 18, color = "currentColor" }) => {
     logout:    "M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4 M16 17l5-5-5-5 M21 12H9",
     eye:       "M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z M12 9a3 3 0 100 6 3 3 0 000-6z",
     eyeoff:    "M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94 M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19 M1 1l22 22",
+    clock:     "M12 22a10 10 0 100-20 10 10 0 000 20z M12 6v6l4 2",
+    dollar:    "M12 1v22 M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6",
+    file:      "M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z M14 2v6h6 M16 13H8 M16 17H8 M10 9H8",
+    link:      "M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71 M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71",
+    invoice:   "M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z M14 2v6h6 M12 18v-6 M9 15h6",
+    users2:    "M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2 M12 7a4 4 0 100 8 4 4 0 000-8z M22 21v-2a4 4 0 00-3-3.87 M16 3.13a4 4 0 010 7.75",
+    alert:     "M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z M12 9v4 M12 17h.01",
   };
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
@@ -493,12 +500,61 @@ const NotesThread = ({ notes = [], onAdd }) => {
 // ═════════════════════════════════════════════════════════════════════════════
 // TASKS
 // ═════════════════════════════════════════════════════════════════════════════
+const scheduleDeadlineNotification = (task) => {
+  if (!task.deadline || typeof Notification === "undefined") return;
+  const deadline = new Date(task.deadline);
+  const now = new Date();
+  const msUntil = deadline - now - 60 * 60 * 1000; // 1 hour before
+  if (msUntil > 0 && msUntil < 24 * 60 * 60 * 1000) {
+    setTimeout(() => {
+      if (Notification.permission === "granted") {
+        new Notification("Teki — Task Due Soon", {
+          body: `"${task.title}" is due in about 1 hour.`,
+          icon: "/favicon.ico",
+        });
+      }
+    }, msUntil);
+  }
+};
+
+const DeadlineBadge = ({ deadline, done }) => {
+  if (!deadline || done) return null;
+  const d = new Date(deadline);
+  const now = new Date();
+  const diffMs = d - now;
+  const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+  const overdue = diffMs < 0;
+  const soon = diffMs > 0 && diffDays <= 2;
+  const color = overdue ? C.red : soon ? C.gold : C.textLight;
+  const label = overdue
+    ? `Overdue · ${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
+    : diffDays === 0 ? "Due today"
+    : diffDays === 1 ? "Due tomorrow"
+    : `Due ${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: 4,
+      fontSize: 11, color, fontWeight: 600,
+      background: color + "15", padding: "2px 8px", borderRadius: 4,
+    }}>
+      <Icon name="clock" size={11} color={color} />{label}
+    </span>
+  );
+};
+
 const Tasks = ({ tasks, setTasks, user }) => {
   const [modal, setModal] = useState(false);
   const [detail, setDetail] = useState(null);
-  const [form, setForm] = useState({ title: "", project: "other", priority: "normal", notes: "" });
+  const [form, setForm] = useState({ title: "", project: "other", priority: "normal", notes: "", deadline: "" });
   const [filter, setFilter] = useState("all");
   const [listening, setListening] = useState(false);
+
+  // Request notification permission on mount
+  useEffect(() => {
+    if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+  }, []);
 
   const startVoice = () => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -510,21 +566,21 @@ const Tasks = ({ tasks, setTasks, user }) => {
   };
 
   const addTask = async () => {
-    if (!form.title.trim()) return;
+    if (!form.title.trim()) { alert("Please enter a task title."); return; }
+    if (!form.deadline) { alert("Please set a deadline — it's required."); return; }
     const row = { ...form, task_notes: [], done: false, user_id: user.id, created_at: new Date().toISOString() };
     const { data } = await supabase.from("tasks").insert(row);
     if (!Array.isArray(data) || !data[0]) {
       alert("Error saving task — please check your Supabase connection.");
       return;
     }
+    scheduleDeadlineNotification(data[0]);
     setTasks(prev => [data[0], ...prev]);
-    setModal(false); setForm({ title: "", project: "other", priority: "normal", notes: "" });
+    setModal(false); setForm({ title: "", project: "other", priority: "normal", notes: "", deadline: "" });
   };
 
   const toggleDone = async (t) => {
-    // Update UI instantly
     setTasks(prev => prev.map(x => x.id === t.id ? { ...x, done: !t.done } : x));
-    // Then sync to Supabase in background
     await supabase.from("tasks").update({ done: !t.done }).eq("id", t.id);
   };
 
@@ -537,17 +593,17 @@ const Tasks = ({ tasks, setTasks, user }) => {
   const addTaskNote = async (note) => {
     if (!detail) return;
     const updated = [note, ...(detail.task_notes || [])];
-    const { data } = await supabase.from("tasks").update({ task_notes: updated }).eq("id", detail.id);
-    if (data === null || (Array.isArray(data) && data.length === 0)) {
-      // Still update local state so UI feels responsive
-    }
+    await supabase.from("tasks").update({ task_notes: updated }).eq("id", detail.id);
     setTasks(prev => prev.map(x => x.id === detail.id ? { ...x, task_notes: updated } : x));
     setDetail(prev => ({ ...prev, task_notes: updated }));
   };
 
   const filtered = filter === "all" ? tasks.filter(t => !t.done)
     : filter === "done" ? tasks.filter(t => t.done)
+    : filter === "overdue" ? tasks.filter(t => !t.done && t.deadline && new Date(t.deadline) < new Date())
     : tasks.filter(t => t.project === filter && !t.done);
+
+  const overdueCount = tasks.filter(t => !t.done && t.deadline && new Date(t.deadline) < new Date()).length;
 
   return (
     <div>
@@ -559,10 +615,16 @@ const Tasks = ({ tasks, setTasks, user }) => {
       </div>
 
       <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, marginBottom: 16 }}>
-        {[{ id: "all", label: "All Open" }, { id: "done", label: "Done" }, ...PROJECTS.map(p => ({ id: p.id, label: p.name.split(" ")[0] }))].map(f => (
+        {[
+          { id: "all", label: "All Open" },
+          { id: "done", label: "Done" },
+          ...(overdueCount > 0 ? [{ id: "overdue", label: `⚠️ Overdue (${overdueCount})` }] : []),
+          ...PROJECTS.map(p => ({ id: p.id, label: p.name.split(" ")[0] }))
+        ].map(f => (
           <button key={f.id} onClick={() => setFilter(f.id)} style={{
-            background: filter === f.id ? C.green : C.white, color: filter === f.id ? C.cream : C.textMid,
-            border: `1.5px solid ${filter === f.id ? C.green : C.border}`,
+            background: filter === f.id ? (f.id === "overdue" ? C.red : C.green) : C.white,
+            color: filter === f.id ? C.cream : f.id === "overdue" ? C.red : C.textMid,
+            border: `1.5px solid ${filter === f.id ? (f.id === "overdue" ? C.red : C.green) : f.id === "overdue" ? C.red + "44" : C.border}`,
             borderRadius: 20, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0,
           }}>{f.label}</button>
         ))}
@@ -573,8 +635,13 @@ const Tasks = ({ tasks, setTasks, user }) => {
       {filtered.map(t => {
         const proj = PROJECTS.find(p => p.id === t.project);
         const noteCount = (t.task_notes || []).length;
+        const overdue = !t.done && t.deadline && new Date(t.deadline) < new Date();
         return (
-          <div key={t.id} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "14px 16px", marginBottom: 10, opacity: t.done ? 0.55 : 1 }}>
+          <div key={t.id} style={{
+            background: C.white,
+            border: `1px solid ${overdue ? C.red + "44" : C.border}`,
+            borderRadius: 14, padding: "14px 16px", marginBottom: 10, opacity: t.done ? 0.55 : 1,
+          }}>
             <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
               <button onClick={() => toggleDone(t)} style={{
                 width: 22, height: 22, borderRadius: 6, flexShrink: 0,
@@ -590,7 +657,8 @@ const Tasks = ({ tasks, setTasks, user }) => {
                 <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap", alignItems: "center" }}>
                   {proj && <Badge color={proj.color} label={proj.name.split(" ")[0]} />}
                   {t.priority === "high" && <Badge color={C.red} label="High" />}
-                  {noteCount > 0 && <span style={{ fontSize: 11, color: C.textLight }}>📝 {noteCount} note{noteCount !== 1 ? "s" : ""}</span>}
+                  <DeadlineBadge deadline={t.deadline} done={t.done} />
+                  {noteCount > 0 && <span style={{ fontSize: 11, color: C.textLight }}>📝 {noteCount}</span>}
                 </div>
               </div>
               <button onClick={() => setDetail(t)} style={{ background: "none", border: "none", cursor: "pointer", color: C.textLight, flexShrink: 0, padding: 4 }}>
@@ -606,11 +674,15 @@ const Tasks = ({ tasks, setTasks, user }) => {
 
       <Modal open={modal} onClose={() => setModal(false)} title="New Task">
         <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-          <input style={{ ...inputStyle, flex: 1 }} placeholder="What needs to be done?" value={form.title}
-            onChange={e => setForm(f => ({ ...f, title: e.target.value }))} onKeyDown={e => e.key === "Enter" && addTask()} autoFocus />
+          <input style={{ ...inputStyle, flex: 1 }} placeholder="What needs to be done? *" value={form.title}
+            onChange={e => setForm(f => ({ ...f, title: e.target.value }))} autoFocus />
           <button onClick={startVoice} style={{ background: listening ? C.red + "18" : C.creamDark, border: `1.5px solid ${C.border}`, borderRadius: 10, padding: "0 14px", cursor: "pointer", flexShrink: 0 }}>
             <Icon name="mic" size={18} color={listening ? C.red : C.textMid} />
           </button>
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 12, color: C.textMid, fontWeight: 600, marginBottom: 6 }}>Deadline * <span style={{ color: C.red, fontWeight: 400 }}>(required)</span></div>
+          <input type="datetime-local" style={{ ...inputStyle }} value={form.deadline} onChange={e => setForm(f => ({ ...f, deadline: e.target.value }))} />
         </div>
         <select style={{ ...selectStyle, marginBottom: 12 }} value={form.project} onChange={e => setForm(f => ({ ...f, project: e.target.value }))}>
           {PROJECTS.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -629,6 +701,7 @@ const Tasks = ({ tasks, setTasks, user }) => {
             <div style={{ marginBottom: 20 }}>
               {(() => { const proj = PROJECTS.find(p => p.id === detail.project); return proj ? <Badge color={proj.color} label={proj.name} /> : null; })()}
               {detail.priority === "high" && <span style={{ marginLeft: 6 }}><Badge color={C.red} label="High Priority" /></span>}
+              {detail.deadline && <div style={{ marginTop: 8 }}><DeadlineBadge deadline={detail.deadline} done={detail.done} /></div>}
               {detail.notes && <div style={{ fontSize: 13, color: C.textMid, marginTop: 10, background: C.creamDark, borderRadius: 10, padding: "10px 14px" }}>{detail.notes}</div>}
             </div>
             <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 20, marginBottom: 20 }}>
@@ -645,37 +718,64 @@ const Tasks = ({ tasks, setTasks, user }) => {
   );
 };
 
+
 // ═════════════════════════════════════════════════════════════════════════════
 // CRM / PIPELINE
 // ═════════════════════════════════════════════════════════════════════════════
 const BLANK_PERSON = { name: "", role: "", email: "", phone: "", whatsapp: "", telegram: "" };
+const BLANK_FORM = { name: "", company: "", project: "other", status: "New", notes: "", amount: "", currency: "USD", is_referral: false, referrer_name: "", referrer_commission: "", engagement_letter_url: "", engagement_letter_status: "Pending", engagement_amount: "" };
 
 const CRM = ({ contacts, setContacts, user }) => {
   const [modal, setModal] = useState(false);
   const [detail, setDetail] = useState(null);
-  const [form, setForm] = useState({ name: "", company: "", project: "other", status: "New", notes: "", people: [] });
+  const [form, setForm] = useState(BLANK_FORM);
   const [filter, setFilter] = useState("all");
   const [outreachNote, setOutreachNote] = useState("");
   const [addingPerson, setAddingPerson] = useState(false);
   const [personForm, setPersonForm] = useState(BLANK_PERSON);
+  const [engLetterFile, setEngLetterFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
+
+  const getToken = () => {
+    try { return JSON.parse(localStorage.getItem("teki_session"))?.access_token || SUPABASE_ANON; } catch { return SUPABASE_ANON; }
+  };
+
+  const uploadEngagementLetter = async (file, contactId) => {
+    if (!file) return null;
+    setUploading(true);
+    const path = `engagement-letters/${contactId}/${Date.now()}-${file.name}`;
+    const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${path}`, {
+      method: "POST",
+      headers: { "apikey": SUPABASE_ANON, "Authorization": `Bearer ${getToken()}`, "Content-Type": file.type, "x-upsert": "true" },
+      body: file,
+    });
+    setUploading(false);
+    if (res.ok) return `${SUPABASE_URL}/storage/v1/object/public/${path}`;
+    alert("Upload failed — make sure a public bucket called 'engagement-letters' exists in Supabase Storage.");
+    return null;
+  };
 
   const addContact = async () => {
-    if (!form.name.trim()) return;
+    if (!form.name.trim()) { alert("Please enter a company name."); return; }
+    if (!form.amount) { alert("Deal amount is required."); return; }
     const row = { ...form, outreach: [], contact_notes: [], people: [], user_id: user.id, created_at: new Date().toISOString() };
     const { data } = await supabase.from("contacts").insert(row);
-    if (!Array.isArray(data) || !data[0]) {
-      alert("Error saving contact — please check your Supabase connection.");
-      return;
-    }
+    if (!Array.isArray(data) || !data[0]) { alert("Error saving contact."); return; }
     setContacts(prev => [data[0], ...prev]);
-    setModal(false);
-    setForm({ name: "", company: "", project: "other", status: "New", notes: "", people: [] });
+    setModal(false); setForm(BLANK_FORM);
   };
 
   const updateStatus = async (id, status) => {
     await supabase.from("contacts").update({ status }).eq("id", id);
     setContacts(prev => prev.map(c => c.id === id ? { ...c, status } : c));
     setDetail(prev => prev ? { ...prev, status } : prev);
+  };
+
+  const updateField = async (field, value) => {
+    if (!detail) return;
+    await supabase.from("contacts").update({ [field]: value }).eq("id", detail.id);
+    setContacts(prev => prev.map(c => c.id === detail.id ? { ...c, [field]: value } : c));
+    setDetail(prev => ({ ...prev, [field]: value }));
   };
 
   const addOutreach = async () => {
@@ -702,8 +802,7 @@ const CRM = ({ contacts, setContacts, user }) => {
     await supabase.from("contacts").update({ people: updated }).eq("id", detail.id);
     setContacts(prev => prev.map(c => c.id === detail.id ? { ...c, people: updated } : c));
     setDetail(prev => ({ ...prev, people: updated }));
-    setPersonForm(BLANK_PERSON);
-    setAddingPerson(false);
+    setPersonForm(BLANK_PERSON); setAddingPerson(false);
   };
 
   const removePerson = async (personId) => {
@@ -712,6 +811,12 @@ const CRM = ({ contacts, setContacts, user }) => {
     await supabase.from("contacts").update({ people: updated }).eq("id", detail.id);
     setContacts(prev => prev.map(c => c.id === detail.id ? { ...c, people: updated } : c));
     setDetail(prev => ({ ...prev, people: updated }));
+  };
+
+  const handleEngagementUpload = async () => {
+    if (!engLetterFile || !detail) return;
+    const url = await uploadEngagementLetter(engLetterFile, detail.id);
+    if (url) { await updateField("engagement_letter_url", url); setEngLetterFile(null); }
   };
 
   const deleteContact = async (id) => {
@@ -725,15 +830,13 @@ const CRM = ({ contacts, setContacts, user }) => {
   const ContactLink = ({ icon, value, href }) => {
     if (!value) return null;
     return (
-      <a href={href || "#"} target="_blank" rel="noreferrer" style={{
-        display: "inline-flex", alignItems: "center", gap: 5,
-        fontSize: 12, color: C.green, fontWeight: 600, textDecoration: "none",
-        background: C.green + "12", padding: "4px 10px", borderRadius: 6,
-      }}>
+      <a href={href || "#"} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: C.green, fontWeight: 600, textDecoration: "none", background: C.green + "12", padding: "4px 10px", borderRadius: 6 }}>
         <span>{icon}</span>{value}
       </a>
     );
   };
+
+  const fmtAmount = (c) => c.amount ? `${c.currency || "USD"} ${Number(c.amount).toLocaleString()}` : null;
 
   return (
     <div>
@@ -754,19 +857,25 @@ const CRM = ({ contacts, setContacts, user }) => {
         ))}
       </div>
 
-      {filtered.length === 0 && <div style={{ textAlign: "center", color: C.textLight, padding: "40px 0", fontSize: 14 }}>No contacts yet</div>}
+      {filtered.length === 0 && <div style={{ textAlign: "center", color: C.textLight, padding: "40px 0", fontSize: 14 }}>No deals yet</div>}
 
       {filtered.map(c => {
         const proj = PROJECTS.find(p => p.id === c.project);
         const peopleCount = (c.people || []).length;
+        const amt = fmtAmount(c);
         return (
-          <div key={c.id} onClick={() => { setDetail(c); setOutreachNote(""); setAddingPerson(false); setPersonForm(BLANK_PERSON); }}
+          <div key={c.id} onClick={() => { setDetail(c); setOutreachNote(""); setAddingPerson(false); setPersonForm(BLANK_PERSON); setEngLetterFile(null); }}
             style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "14px 16px", marginBottom: 10, cursor: "pointer" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <div style={{ width: 40, height: 40, borderRadius: 10, background: (proj?.color || C.green) + "20", display: "flex", alignItems: "center", justifyContent: "center", color: proj?.color || C.green, fontWeight: 800, fontSize: 16, flexShrink: 0 }}>{c.name[0]}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 600, fontSize: 15, color: C.text }}>{c.name}</div>
-                <div style={{ fontSize: 12, color: C.textLight }}>{c.company}{peopleCount > 0 ? ` · ${peopleCount} contact${peopleCount !== 1 ? "s" : ""}` : ""}</div>
+                <div style={{ fontSize: 12, color: C.textLight, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {c.company && <span>{c.company}</span>}
+                  {amt && <span style={{ color: C.green, fontWeight: 700 }}>{amt}</span>}
+                  {c.is_referral && <span style={{ color: C.gold, fontWeight: 600 }}>↩ Referral</span>}
+                  {peopleCount > 0 && <span>{peopleCount} contact{peopleCount !== 1 ? "s" : ""}</span>}
+                </div>
               </div>
               <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
                 <Badge color={STATUS_COLORS[c.status] || C.textLight} label={c.status} />
@@ -777,57 +886,91 @@ const CRM = ({ contacts, setContacts, user }) => {
         );
       })}
 
-      {/* Add contact modal */}
-      <Modal open={modal} onClose={() => setModal(false)} title="New Contact">
+      {/* Add deal modal */}
+      <Modal open={modal} onClose={() => setModal(false)} title="New Deal">
         <input style={{ ...inputStyle, marginBottom: 10 }} placeholder="Company / Organization *" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} autoFocus />
         <input style={{ ...inputStyle, marginBottom: 10 }} placeholder="Industry / description" value={form.company} onChange={e => setForm(f => ({ ...f, company: e.target.value }))} />
+        <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: 8, marginBottom: 4 }}>
+          <select style={selectStyle} value={form.currency} onChange={e => setForm(f => ({ ...f, currency: e.target.value }))}>
+            {["USD","EUR","GBP","BRL","PYG","ARS"].map(c => <option key={c}>{c}</option>)}
+          </select>
+          <input style={{ ...inputStyle, borderColor: !form.amount ? C.red + "88" : C.border }} type="number" placeholder="Deal amount *" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} />
+        </div>
+        {!form.amount && <div style={{ fontSize: 11, color: C.red, marginBottom: 8 }}>Amount is required</div>}
+        <div style={{ marginBottom: 10 }} />
         <select style={{ ...selectStyle, marginBottom: 10 }} value={form.project} onChange={e => setForm(f => ({ ...f, project: e.target.value }))}>
           {PROJECTS.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
         <select style={{ ...selectStyle, marginBottom: 10 }} value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value }))}>
           {STATUSES.map(s => <option key={s}>{s}</option>)}
         </select>
-        <textarea style={{ ...inputStyle, minHeight: 70, resize: "vertical", marginBottom: 8 }} placeholder="Notes" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
-        <button style={btnPrimary} onClick={addContact}>Add to Pipeline</button>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: form.is_referral ? 10 : 14, padding: "10px 14px", background: C.creamDark, borderRadius: 10 }}>
+          <input type="checkbox" id="is_ref" checked={form.is_referral} onChange={e => setForm(f => ({ ...f, is_referral: e.target.checked }))} style={{ width: 16, height: 16, cursor: "pointer" }} />
+          <label htmlFor="is_ref" style={{ fontSize: 14, color: C.text, cursor: "pointer", fontWeight: 500 }}>This is a referral</label>
+        </div>
+        {form.is_referral && (
+          <div style={{ background: C.gold + "12", border: `1px solid ${C.gold}44`, borderRadius: 10, padding: 12, marginBottom: 10 }}>
+            <input style={{ ...inputStyle, marginBottom: 8 }} placeholder="Referrer name *" value={form.referrer_name} onChange={e => setForm(f => ({ ...f, referrer_name: e.target.value }))} />
+            <input style={inputStyle} placeholder="Commission (e.g. 10% or USD 500)" value={form.referrer_commission} onChange={e => setForm(f => ({ ...f, referrer_commission: e.target.value }))} />
+          </div>
+        )}
+        <textarea style={{ ...inputStyle, minHeight: 60, resize: "vertical", marginBottom: 8 }} placeholder="Notes" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
+        <button style={btnPrimary} onClick={addContact}>Add Deal</button>
       </Modal>
 
-      {/* Contact detail modal */}
-      <Modal open={!!detail} onClose={() => { setDetail(null); setOutreachNote(""); setAddingPerson(false); }} title={detail?.name || ""} wide>
+      {/* Deal detail modal */}
+      <Modal open={!!detail} onClose={() => { setDetail(null); setOutreachNote(""); setAddingPerson(false); setEngLetterFile(null); }} title={detail?.name || ""} wide>
         {detail && (() => {
           const proj = PROJECTS.find(p => p.id === detail.project);
           return (
             <>
-              {/* Header info */}
               <div style={{ marginBottom: 16 }}>
                 {detail.company && <div style={{ fontSize: 13, color: C.textMid, marginBottom: 6 }}>{detail.company}</div>}
-                {proj && <Badge color={proj.color} label={proj.name} />}
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                  {proj && <Badge color={proj.color} label={proj.name} />}
+                  {detail.amount && <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 20, fontWeight: 700, color: C.green }}>{detail.currency || "USD"} {Number(detail.amount).toLocaleString()}</span>}
+                  {detail.is_referral && <Badge color={C.gold} label={`↩ ${detail.referrer_name || "Referral"} · ${detail.referrer_commission || "TBD"}`} />}
+                </div>
               </div>
 
-              {/* Status */}
               <div style={{ marginBottom: 20 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Status</div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                   {STATUSES.map(s => (
-                    <button key={s} onClick={() => updateStatus(detail.id, s)} style={{
-                      background: detail.status === s ? (STATUS_COLORS[s] || C.green) : C.creamDark,
-                      color: detail.status === s ? C.white : C.textMid,
-                      border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer",
-                    }}>{s}</button>
+                    <button key={s} onClick={() => updateStatus(detail.id, s)} style={{ background: detail.status === s ? (STATUS_COLORS[s] || C.green) : C.creamDark, color: detail.status === s ? C.white : C.textMid, border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{s}</button>
                   ))}
                 </div>
               </div>
 
-              {/* People at this company */}
-              <div style={{ marginBottom: 20 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                    Contacts at {detail.name}
-                  </div>
-                  <button onClick={() => setAddingPerson(p => !p)} style={{ background: C.green + "15", border: "none", borderRadius: 8, padding: "5px 12px", fontSize: 12, fontWeight: 700, color: C.green, cursor: "pointer" }}>
-                    + Add person
+              {/* Engagement Letter */}
+              <div style={{ marginBottom: 20, background: C.creamDark, borderRadius: 14, padding: 16 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>Engagement Letter</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
+                  <select style={selectStyle} value={detail.engagement_letter_status || "Pending"} onChange={e => updateField("engagement_letter_status", e.target.value)}>
+                    {["Pending","Sent","Signed"].map(s => <option key={s}>{s}</option>)}
+                  </select>
+                  <input style={inputStyle} type="number" placeholder="Agreed amount" value={detail.engagement_amount || ""} onChange={e => updateField("engagement_amount", e.target.value)} />
+                </div>
+                <input style={{ ...inputStyle, marginBottom: 8 }} placeholder="Paste link (URL)" value={detail.engagement_letter_url || ""} onChange={e => updateField("engagement_letter_url", e.target.value)} />
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <input type="file" accept=".pdf,.doc,.docx" onChange={e => setEngLetterFile(e.target.files[0])} style={{ fontSize: 12, flex: 1, color: C.textMid }} />
+                  <button onClick={handleEngagementUpload} disabled={!engLetterFile || uploading} style={{ ...btnPrimary, marginTop: 0, width: "auto", padding: "8px 14px", fontSize: 13, opacity: (!engLetterFile || uploading) ? 0.5 : 1 }}>
+                    {uploading ? "Uploading..." : "Upload"}
                   </button>
                 </div>
+                {detail.engagement_letter_url && (
+                  <a href={detail.engagement_letter_url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: C.green, display: "flex", alignItems: "center", gap: 4, marginTop: 8, textDecoration: "none", fontWeight: 600 }}>
+                    <Icon name="file" size={13} color={C.green} /> View engagement letter
+                  </a>
+                )}
+              </div>
 
+              {/* People */}
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.08em" }}>Contacts at {detail.name}</div>
+                  <button onClick={() => setAddingPerson(p => !p)} style={{ background: C.green + "15", border: "none", borderRadius: 8, padding: "5px 12px", fontSize: 12, fontWeight: 700, color: C.green, cursor: "pointer" }}>+ Add person</button>
+                </div>
                 {addingPerson && (
                   <div style={{ background: C.creamDark, borderRadius: 12, padding: 14, marginBottom: 12 }}>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
@@ -841,55 +984,40 @@ const CRM = ({ contacts, setContacts, user }) => {
                       <input style={{ ...inputStyle, fontSize: 13 }} placeholder="✈️ Telegram" value={personForm.telegram} onChange={e => setPersonForm(p => ({ ...p, telegram: e.target.value }))} />
                     </div>
                     <div style={{ display: "flex", gap: 8 }}>
-                      <button style={{ ...btnPrimary, marginTop: 0, flex: 1 }} onClick={addPerson}>Save person</button>
+                      <button style={{ ...btnPrimary, marginTop: 0, flex: 1 }} onClick={addPerson}>Save</button>
                       <button style={{ ...btnSecondary, marginTop: 0, flex: 0.4 }} onClick={() => { setAddingPerson(false); setPersonForm(BLANK_PERSON); }}>Cancel</button>
                     </div>
                   </div>
                 )}
-
-                {(detail.people || []).length === 0 && !addingPerson && (
-                  <div style={{ fontSize: 12, color: C.textLight }}>No contacts added yet.</div>
-                )}
-
+                {(detail.people || []).length === 0 && !addingPerson && <div style={{ fontSize: 12, color: C.textLight }}>No contacts added yet.</div>}
                 {(detail.people || []).map(p => (
                   <div key={p.id} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 14px", marginBottom: 8 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                      <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ flex: 1 }}>
                         <div style={{ fontWeight: 700, fontSize: 14, color: C.text }}>{p.name}</div>
                         {p.role && <div style={{ fontSize: 12, color: C.textLight, marginBottom: 6 }}>{p.role}</div>}
-                        {p.email && (
-                          <div style={{ marginBottom: 4 }}>
-                            <a href={`mailto:${p.email}`} style={{ fontSize: 12, color: C.green, textDecoration: "none" }}>✉️ {p.email}</a>
-                          </div>
-                        )}
+                        {p.email && <div style={{ marginBottom: 4 }}><a href={`mailto:${p.email}`} style={{ fontSize: 12, color: C.green, textDecoration: "none" }}>✉️ {p.email}</a></div>}
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
                           {p.phone && <ContactLink icon="📞" value={p.phone} href={`tel:${p.phone}`} />}
                           {p.whatsapp && <ContactLink icon="💬" value={p.whatsapp} href={`https://wa.me/${p.whatsapp.replace(/\D/g,"")}`} />}
                           {p.telegram && <ContactLink icon="✈️" value={p.telegram} href={`https://t.me/${p.telegram.replace("@","")}`} />}
                         </div>
                       </div>
-                      <button onClick={() => removePerson(p.id)} style={{ background: "none", border: "none", cursor: "pointer", color: C.textLight, padding: 4, flexShrink: 0 }}>
-                        <Icon name="trash" size={14} />
-                      </button>
+                      <button onClick={() => removePerson(p.id)} style={{ background: "none", border: "none", cursor: "pointer", color: C.textLight, padding: 4 }}><Icon name="trash" size={14} /></button>
                     </div>
                   </div>
                 ))}
               </div>
 
-              {/* Notes */}
               <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 20, marginBottom: 20 }}>
                 <NotesThread notes={detail.contact_notes || []} onAdd={addContactNote} />
               </div>
 
-              {/* Outreach log */}
               <div style={{ marginBottom: 20 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Outreach Log</div>
                 <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-                  <input style={{ ...inputStyle, flex: 1, fontSize: 13 }} placeholder="Log a touch point..." value={outreachNote}
-                    onChange={e => setOutreachNote(e.target.value)} onKeyDown={e => e.key === "Enter" && addOutreach()} />
-                  <button onClick={addOutreach} style={{ background: C.green, border: "none", borderRadius: 10, padding: "0 14px", cursor: "pointer", flexShrink: 0 }}>
-                    <Icon name="send" size={15} color={C.cream} />
-                  </button>
+                  <input style={{ ...inputStyle, flex: 1, fontSize: 13 }} placeholder="Log a touch point..." value={outreachNote} onChange={e => setOutreachNote(e.target.value)} onKeyDown={e => e.key === "Enter" && addOutreach()} />
+                  <button onClick={addOutreach} style={{ background: C.green, border: "none", borderRadius: 10, padding: "0 14px", cursor: "pointer", flexShrink: 0 }}><Icon name="send" size={15} color={C.cream} /></button>
                 </div>
                 {(detail.outreach || []).map((o, i) => (
                   <div key={i} style={{ borderLeft: `3px solid ${C.gold}`, paddingLeft: 10, marginBottom: 8 }}>
@@ -900,12 +1028,11 @@ const CRM = ({ contacts, setContacts, user }) => {
                 {(!detail.outreach || detail.outreach.length === 0) && <div style={{ fontSize: 12, color: C.textLight }}>No outreach logged yet</div>}
               </div>
 
-              {/* Comments */}
               <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 20, marginBottom: 16 }}>
                 <CommentsThread itemId={String(detail.id)} itemType="contact" user={user} />
               </div>
 
-              <button onClick={() => deleteContact(detail.id)} style={{ ...btnSecondary, color: C.red, borderColor: C.red }}>Delete Contact</button>
+              <button onClick={() => deleteContact(detail.id)} style={{ ...btnSecondary, color: C.red, borderColor: C.red }}>Delete Deal</button>
             </>
           );
         })()}
@@ -913,6 +1040,7 @@ const CRM = ({ contacts, setContacts, user }) => {
     </div>
   );
 };
+
 
 // ═════════════════════════════════════════════════════════════════════════════
 // PROJECTS VIEW
@@ -946,6 +1074,147 @@ const ProjectsView = ({ tasks, contacts }) => (
 );
 
 // ═════════════════════════════════════════════════════════════════════════════
+
+// ═════════════════════════════════════════════════════════════════════════════
+// BILLING / INVOICES
+// ═════════════════════════════════════════════════════════════════════════════
+const INVOICE_STATUSES = ["Draft", "Sent", "Paid", "Overdue", "Cancelled"];
+const INVOICE_STATUS_COLORS = { "Draft": C.textLight, "Sent": C.green, "Paid": C.greenLight, "Overdue": C.red, "Cancelled": C.textMid };
+
+const Billing = ({ contacts, user }) => {
+  const [invoices, setInvoices] = useState([]);
+  const [modal, setModal] = useState(false);
+  const [form, setForm] = useState({ contact_id: "", title: "", amount: "", currency: "USD", due_date: "", notes: "", status: "Draft" });
+  const [filter, setFilter] = useState("all");
+
+  useEffect(() => {
+    supabase.from("invoices").select("*").eq("user_id", user.id).order("created_at", { ascending: false }).then(({ data }) => setInvoices(data || []));
+  }, [user.id]);
+
+  const addInvoice = async () => {
+    if (!form.title.trim()) { alert("Please enter an invoice title."); return; }
+    if (!form.amount) { alert("Invoice amount is required."); return; }
+    if (!form.due_date) { alert("Due date is required."); return; }
+    const row = { ...form, user_id: user.id, created_at: new Date().toISOString() };
+    const { data } = await supabase.from("invoices").insert(row);
+    if (!Array.isArray(data) || !data[0]) { alert("Error saving invoice."); return; }
+    setInvoices(prev => [data[0], ...prev]);
+    setModal(false); setForm({ contact_id: "", title: "", amount: "", currency: "USD", due_date: "", notes: "", status: "Draft" });
+  };
+
+  const updateInvoiceStatus = async (id, status) => {
+    await supabase.from("invoices").update({ status }).eq("id", id);
+    setInvoices(prev => prev.map(inv => inv.id === id ? { ...inv, status } : inv));
+  };
+
+  const deleteInvoice = async (id) => {
+    await supabase.from("invoices").delete().eq("id", id);
+    setInvoices(prev => prev.filter(inv => inv.id !== id));
+  };
+
+  const filtered = filter === "all" ? invoices : invoices.filter(inv => inv.status === filter);
+
+  const totalPaid = invoices.filter(i => i.status === "Paid").reduce((s, i) => s + Number(i.amount || 0), 0);
+  const totalPending = invoices.filter(i => i.status === "Sent").reduce((s, i) => s + Number(i.amount || 0), 0);
+  const totalOverdue = invoices.filter(i => i.status === "Overdue").reduce((s, i) => s + Number(i.amount || 0), 0);
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <span style={{ fontFamily: "'Cormorant Garamond', Georgia, serif", fontSize: 24, fontWeight: 700, color: C.green }}>Billing</span>
+        <button onClick={() => setModal(true)} style={{ background: C.green, color: C.cream, border: "none", borderRadius: 10, padding: "8px 16px", fontWeight: 700, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+          <Icon name="plus" size={16} color={C.cream} /> New Invoice
+        </button>
+      </div>
+
+      {/* Summary */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 20 }}>
+        {[
+          { label: "Collected", value: totalPaid, color: C.greenLight },
+          { label: "Pending", value: totalPending, color: C.gold },
+          { label: "Overdue", value: totalOverdue, color: C.red },
+        ].map(s => (
+          <div key={s.label} style={{ background: C.white, borderRadius: 14, padding: "14px 12px", border: `1px solid ${s.value > 0 ? s.color + "44" : C.border}`, textAlign: "center" }}>
+            <div style={{ fontSize: 10, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{s.label}</div>
+            <div style={{ fontSize: 16, fontWeight: 800, color: s.value > 0 ? s.color : C.textLight, fontFamily: "'Cormorant Garamond', serif" }}>
+              ${s.value.toLocaleString()}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Filter */}
+      <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, marginBottom: 16 }}>
+        {["all", ...INVOICE_STATUSES].map(s => (
+          <button key={s} onClick={() => setFilter(s)} style={{
+            background: filter === s ? C.green : C.white, color: filter === s ? C.cream : C.textMid,
+            border: `1.5px solid ${filter === s ? C.green : C.border}`,
+            borderRadius: 20, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0,
+          }}>{s === "all" ? "All" : s}</button>
+        ))}
+      </div>
+
+      {filtered.length === 0 && <div style={{ textAlign: "center", color: C.textLight, padding: "40px 0", fontSize: 14 }}>No invoices yet</div>}
+
+      {filtered.map(inv => {
+        const contact = contacts.find(c => c.id === inv.contact_id);
+        const isOverdue = inv.status === "Sent" && inv.due_date && new Date(inv.due_date) < new Date();
+        return (
+          <div key={inv.id} style={{ background: C.white, border: `1px solid ${isOverdue ? C.red + "44" : C.border}`, borderRadius: 14, padding: "14px 16px", marginBottom: 10 }}>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+              <div style={{ width: 40, height: 40, borderRadius: 10, background: C.green + "15", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                <Icon name="invoice" size={18} color={C.green} />
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 15, color: C.text }}>{inv.title}</div>
+                <div style={{ fontSize: 12, color: C.textLight, marginTop: 2 }}>
+                  {contact ? contact.name : "No deal linked"}
+                  {inv.due_date && ` · Due ${new Date(inv.due_date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`}
+                </div>
+                <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap", alignItems: "center" }}>
+                  <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 16, fontWeight: 700, color: C.green }}>{inv.currency} {Number(inv.amount).toLocaleString()}</span>
+                  <Badge color={INVOICE_STATUS_COLORS[inv.status] || C.textLight} label={inv.status} />
+                  {isOverdue && <Badge color={C.red} label="Past due" />}
+                </div>
+                <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                  {INVOICE_STATUSES.filter(s => s !== inv.status).map(s => (
+                    <button key={s} onClick={() => updateInvoiceStatus(inv.id, s)} style={{ fontSize: 11, color: C.textMid, background: C.creamDark, border: "none", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontWeight: 600 }}>→ {s}</button>
+                  ))}
+                </div>
+              </div>
+              <button onClick={() => deleteInvoice(inv.id)} style={{ background: "none", border: "none", cursor: "pointer", color: C.textLight, flexShrink: 0, padding: 4 }}>
+                <Icon name="trash" size={15} />
+              </button>
+            </div>
+            {inv.notes && <div style={{ fontSize: 12, color: C.textMid, marginTop: 8, paddingTop: 8, borderTop: `1px solid ${C.border}` }}>{inv.notes}</div>}
+          </div>
+        );
+      })}
+
+      <Modal open={modal} onClose={() => setModal(false)} title="New Invoice">
+        <input style={{ ...inputStyle, marginBottom: 10 }} placeholder="Invoice title / description *" value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} autoFocus />
+        <select style={{ ...selectStyle, marginBottom: 10 }} value={form.contact_id} onChange={e => setForm(f => ({ ...f, contact_id: e.target.value }))}>
+          <option value="">Link to a deal (optional)</option>
+          {contacts.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: 8, marginBottom: 10 }}>
+          <select style={selectStyle} value={form.currency} onChange={e => setForm(f => ({ ...f, currency: e.target.value }))}>
+            {["USD","EUR","GBP","BRL","PYG","ARS"].map(c => <option key={c}>{c}</option>)}
+          </select>
+          <input style={inputStyle} type="number" placeholder="Amount *" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} />
+        </div>
+        <div style={{ fontSize: 12, color: C.textMid, fontWeight: 600, marginBottom: 6 }}>Due date *</div>
+        <input type="date" style={{ ...inputStyle, marginBottom: 10 }} value={form.due_date} onChange={e => setForm(f => ({ ...f, due_date: e.target.value }))} />
+        <select style={{ ...selectStyle, marginBottom: 10 }} value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value }))}>
+          {INVOICE_STATUSES.map(s => <option key={s}>{s}</option>)}
+        </select>
+        <textarea style={{ ...inputStyle, minHeight: 60, resize: "vertical", marginBottom: 8 }} placeholder="Notes" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
+        <button style={btnPrimary} onClick={addInvoice}>Create Invoice</button>
+      </Modal>
+    </div>
+  );
+};
+
 // ADMIN VIEW — sees all users' tasks + contacts
 // ═════════════════════════════════════════════════════════════════════════════
 const AdminView = ({ allTasks, allContacts, allUsers }) => {
@@ -1070,6 +1339,7 @@ export default function Teki() {
   const [tasks, setTasks] = useState([]);
   const [contacts, setContacts] = useState([]);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isBilling, setIsBilling] = useState(false);
   const [allTasks, setAllTasks] = useState([]);
   const [allContacts, setAllContacts] = useState([]);
   const [allUsers, setAllUsers] = useState([]);
@@ -1119,6 +1389,10 @@ export default function Teki() {
     // Own data
     supabase.from("tasks").select("*").eq("user_id", uid).order("created_at", { ascending: false }).then(({ data }) => setTasks(data || []));
     supabase.from("contacts").select("*").eq("user_id", uid).order("created_at", { ascending: false }).then(({ data }) => setContacts(data || []));
+    // Billing check
+    supabase.from("billing_users").select("*").eq("user_id", uid).then(({ data: bd }) => {
+      if (bd && bd.length > 0) setIsBilling(true);
+    });
     // Admin check
     supabase.from("admins").select("*").eq("user_id", uid).then(({ data }) => {
       if (data && data.length > 0) {
@@ -1140,6 +1414,7 @@ export default function Teki() {
     { id: "tasks",    label: "Tasks",    icon: "task" },
     { id: "pipeline", label: "Pipeline", icon: "users" },
     { id: "projects", label: "Projects", icon: "briefcase" },
+    ...((isAdmin || isBilling) ? [{ id: "billing", label: "Billing", icon: "invoice" }] : []),
     ...(isAdmin ? [{ id: "admin", label: "Admin", icon: "eye" }] : []),
   ];
 
@@ -1173,6 +1448,7 @@ export default function Teki() {
       {tab === "tasks"    && <Tasks tasks={tasks} setTasks={setTasks} user={normalizedUser} />}
       {tab === "pipeline" && <CRM contacts={contacts} setContacts={setContacts} user={normalizedUser} />}
       {tab === "projects" && <ProjectsView tasks={tasks} contacts={contacts} />}
+      {tab === "billing"  && (isAdmin || isBilling) && <Billing contacts={contacts} user={normalizedUser} />}
       {tab === "admin"    && isAdmin && <AdminView allTasks={allTasks} allContacts={allContacts} allUsers={allUsers} />}
     </>
   );
