@@ -570,12 +570,14 @@ const Tasks = ({ tasks, setTasks, user }) => {
     if (!form.deadline) { alert("Please set a deadline — it's required."); return; }
     const row = { ...form, task_notes: [], done: false, user_id: user.id, created_at: new Date().toISOString() };
     const { data } = await supabase.from("tasks").insert(row);
-    if (!Array.isArray(data) || !data[0]) {
-      alert("Error saving task — please check your Supabase connection.");
-      return;
+    const saved = Array.isArray(data) && data[0] ? data[0] : null;
+    if (!saved) {
+      const { data: refreshed } = await supabase.from("tasks").select("*").eq("user_id", user.id).order("created_at", { ascending: false });
+      if (refreshed) setTasks(refreshed);
+    } else {
+      scheduleDeadlineNotification(saved);
+      setTasks(prev => [saved, ...prev]);
     }
-    scheduleDeadlineNotification(data[0]);
-    setTasks(prev => [data[0], ...prev]);
     setModal(false); setForm({ title: "", project: "other", priority: "normal", notes: "", deadline: "" });
   };
 
@@ -760,8 +762,14 @@ const CRM = ({ contacts, setContacts, user }) => {
     if (!form.amount) { alert("Deal amount is required."); return; }
     const row = { ...form, outreach: [], contact_notes: [], people: [], user_id: user.id, created_at: new Date().toISOString() };
     const { data } = await supabase.from("contacts").insert(row);
-    if (!Array.isArray(data) || !data[0]) { alert("Error saving contact."); return; }
-    setContacts(prev => [data[0], ...prev]);
+    const saved = Array.isArray(data) && data[0] ? data[0] : null;
+    if (!saved) {
+      // Fallback: reload contacts from Supabase to get the real row
+      const { data: refreshed } = await supabase.from("contacts").select("*").eq("user_id", user.id).order("created_at", { ascending: false });
+      if (refreshed) setContacts(refreshed);
+    } else {
+      setContacts(prev => [saved, ...prev]);
+    }
     setModal(false); setForm(BLANK_FORM);
   };
 
