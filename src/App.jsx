@@ -1816,16 +1816,25 @@ const Calendar = ({ user }) => {
   const [toast, setToast] = useState(null);
   const [showIcalModal, setShowIcalModal] = useState(false);
 
-  // Capture OAuth callback params on mount
+  // Grid state
+  const [gridLoading, setGridLoading] = useState(false);
+  const [gridData, setGridData] = useState(null);
+  const [weekStart, setWeekStart] = useState(() => {
+    const d = new Date();
+    const day = d.getDay();
+    const diff = day === 0 ? -6 : 1 - day; // Monday start
+    d.setDate(d.getDate() + diff);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  });
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const status = params.get("calendar_status");
     const message = params.get("message");
     if (status) {
       setToast({ type: status, message: message || (status === "success" ? "Calendar connected" : "Something went wrong") });
-      // Clean URL
       window.history.replaceState({}, "", window.location.pathname);
-      // Auto-dismiss after 6 seconds
       setTimeout(() => setToast(null), 6000);
     }
   }, []);
@@ -1836,42 +1845,43 @@ const Calendar = ({ user }) => {
     try {
       const token = await getValidToken();
       const r = await fetch(`${SUPABASE_URL}/rest/v1/calendar_connections?user_id=eq.${user.id}&order=created_at.desc`, {
-        headers: {
-          "apikey": SUPABASE_ANON,
-          "Authorization": `Bearer ${token}`,
-        },
+        headers: { "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}` },
       });
       if (r.ok) {
         const data = await r.json();
         setConnections(Array.isArray(data) ? data : []);
       }
-    } catch (e) {
-      console.error("Failed to load connections:", e);
-    } finally {
-      setLoading(false);
-    }
+    } catch (e) { console.error("Failed to load connections:", e); }
+    finally { setLoading(false); }
+  };
+
+  const loadAvailability = async () => {
+    if (!user?.id) return;
+    setGridLoading(true);
+    try {
+      const token = await getValidToken();
+      const end = new Date(weekStart);
+      end.setDate(end.getDate() + 7);
+      const url = `/api/calendar/availability?start=${weekStart.toISOString()}&end=${end.toISOString()}`;
+      const r = await fetch(url, { headers: { "Authorization": `Bearer ${token}` } });
+      const data = await r.json();
+      setGridData(data);
+    } catch (e) { console.error("Failed to load availability:", e); }
+    finally { setGridLoading(false); }
   };
 
   useEffect(() => { loadConnections(); }, [user?.id]);
+  useEffect(() => { if (connections.length > 0) loadAvailability(); }, [connections.length, weekStart]);
 
   const connectGoogle = async () => {
     setConnecting(true);
     try {
       const token = await getValidToken();
-      const r = await fetch("/api/calendar/connect/google", {
-        headers: { "Authorization": `Bearer ${token}` },
-      });
+      const r = await fetch("/api/calendar/connect/google", { headers: { "Authorization": `Bearer ${token}` } });
       const data = await r.json();
-      if (data.url) {
-        window.location.href = data.url;
-      } else {
-        setToast({ type: "error", message: data.error || "Failed to start Google OAuth" });
-        setConnecting(false);
-      }
-    } catch (e) {
-      setToast({ type: "error", message: e.message || "Network error" });
-      setConnecting(false);
-    }
+      if (data.url) window.location.href = data.url;
+      else { setToast({ type: "error", message: data.error || "Failed to start Google OAuth" }); setConnecting(false); }
+    } catch (e) { setToast({ type: "error", message: e.message || "Network error" }); setConnecting(false); }
   };
 
   const disconnectAccount = async (connectionId) => {
@@ -1880,90 +1890,183 @@ const Calendar = ({ user }) => {
       const token = await getValidToken();
       await fetch(`${SUPABASE_URL}/rest/v1/calendar_connections?id=eq.${connectionId}`, {
         method: "DELETE",
-        headers: {
-          "apikey": SUPABASE_ANON,
-          "Authorization": `Bearer ${token}`,
-        },
+        headers: { "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}` },
       });
       loadConnections();
-    } catch (e) {
-      setToast({ type: "error", message: "Failed to disconnect" });
-    }
+    } catch (e) { setToast({ type: "error", message: "Failed to disconnect" }); }
   };
 
   const providerLabel = (p) => ({ google: "Google", microsoft: "Microsoft", ical: "iCal Feed" }[p] || p);
   const providerColor = (p) => ({ google: "#4285F4", microsoft: "#00A4EF", ical: "#888888" }[p] || C.textLight);
 
+  // ── WEEKLY GRID HELPERS ────────────────────────────────────────────────
+  const HOURS_START = 7;  // 7 AM
+  const HOURS_END = 22;   // 10 PM
+  const HOUR_HEIGHT = 36; // pixels per hour
+  const HOURS = Array.from({ length: HOURS_END - HOURS_START }, (_, i) => HOURS_START + i);
+
+  const days = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(weekStart); d.setDate(d.getDate() + i); return d;
+  });
+
+  const prevWeek = () => { const d = new Date(weekStart); d.setDate(d.getDate() - 7); setWeekStart(d); };
+  const nextWeek = () => { const d = new Date(weekStart); d.setDate(d.getDate() + 7); setWeekStart(d); };
+  const goToday = () => {
+    const d = new Date(); const day = d.getDay(); const diff = day === 0 ? -6 : 1 - day;
+    d.setDate(d.getDate() + diff); d.setHours(0,0,0,0); setWeekStart(d);
+  };
+
+  const weekRangeLabel = () => {
+    const start = weekStart.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    const endD = new Date(weekStart); endD.setDate(endD.getDate() + 6);
+    const end = endD.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+    return `${start} – ${end}`;
+  };
+
+  // Compute pixel-position of a busy window within a given day
+  const windowPosition = (busy, day) => {
+    const dayStart = new Date(day); dayStart.setHours(HOURS_START, 0, 0, 0);
+    const dayEnd = new Date(day); dayEnd.setHours(HOURS_END, 0, 0, 0);
+    const busyStart = new Date(busy.starts_at);
+    const busyEnd = new Date(busy.ends_at);
+    if (busyEnd <= dayStart || busyStart >= dayEnd) return null; // not in visible range
+    const top = Math.max(0, (busyStart - dayStart) / 3600000 * HOUR_HEIGHT);
+    const bottom = Math.min((dayEnd - dayStart) / 3600000 * HOUR_HEIGHT, (busyEnd - dayStart) / 3600000 * HOUR_HEIGHT);
+    return { top, height: Math.max(8, bottom - top) };
+  };
+
+  // Filter all busy windows for the visible week
+  const allBusy = gridData?.users?.flatMap(u => u.busy.map(b => ({ ...b, user_id: u.user_id }))) || [];
+
   return (
-    <div style={{ padding: 20, maxWidth: 800, margin: "0 auto" }}>
+    <div style={{ padding: 20, maxWidth: 1100, margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <span style={{ fontFamily: "'Cormorant Garamond', Georgia, serif", fontSize: 24, fontWeight: 700, color: C.green }}>Calendar</span>
       </div>
 
       {toast && (
         <div style={{
-          padding: "12px 16px",
-          marginBottom: 16,
-          borderRadius: 12,
+          padding: "12px 16px", marginBottom: 16, borderRadius: 12,
           background: toast.type === "success" ? "#E8F5E9" : "#FFEBEE",
           border: `1px solid ${toast.type === "success" ? "#4CAF50" : "#F44336"}`,
-          color: toast.type === "success" ? "#1B5E20" : "#B71C1C",
-          fontSize: 14,
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
+          color: toast.type === "success" ? "#1B5E20" : "#B71C1C", fontSize: 14,
+          display: "flex", justifyContent: "space-between", alignItems: "center",
         }}>
           <span>{toast.message}</span>
           <button onClick={() => setToast(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "inherit", fontSize: 18 }}>×</button>
         </div>
       )}
 
+      {/* Setup card (compact when calendars exist) */}
       <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: 20, marginBottom: 16 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 16 }}>Connect a calendar</div>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>Connect a calendar</div>
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
           <button onClick={connectGoogle} disabled={connecting} style={{
-            padding: "12px 20px",
-            background: "#4285F4",
-            color: "#fff",
-            border: "none",
-            borderRadius: 10,
-            fontSize: 14,
-            fontWeight: 600,
-            cursor: connecting ? "not-allowed" : "pointer",
-            opacity: connecting ? 0.6 : 1,
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-          }}>
-            {connecting ? "Connecting..." : "Connect Google"}
-          </button>
+            padding: "10px 16px", background: "#4285F4", color: "#fff", border: "none",
+            borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: connecting ? "not-allowed" : "pointer", opacity: connecting ? 0.6 : 1,
+          }}>{connecting ? "Connecting..." : "Connect Google"}</button>
           <button onClick={() => setShowIcalModal(true)} style={{
-            padding: "12px 20px",
-            background: C.green,
-            color: C.cream,
-            border: "none",
-            borderRadius: 10,
-            fontSize: 14,
-            fontWeight: 600,
-            cursor: "pointer",
-          }}>
-            Add iCal Feed
-          </button>
+            padding: "10px 16px", background: C.green, color: C.cream, border: "none",
+            borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: "pointer",
+          }}>Add iCal Feed</button>
           <button disabled style={{
-            padding: "12px 20px",
-            background: C.cream,
-            color: C.textLight,
-            border: `1px solid ${C.border}`,
-            borderRadius: 10,
-            fontSize: 14,
-            fontWeight: 600,
-            cursor: "not-allowed",
-          }}>
-            Microsoft (coming soon)
-          </button>
+            padding: "10px 16px", background: C.cream, color: C.textLight,
+            border: `1px solid ${C.border}`, borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: "not-allowed",
+          }}>Microsoft (coming soon)</button>
         </div>
       </div>
 
+      {/* Weekly grid */}
+      {connections.length > 0 && (
+        <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: 20, marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.1em" }}>Availability</div>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <button onClick={prevWeek} style={{
+                padding: "6px 10px", background: "transparent", color: C.text, border: `1px solid ${C.border}`,
+                borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer",
+              }}>‹</button>
+              <button onClick={goToday} style={{
+                padding: "6px 12px", background: "transparent", color: C.green, border: `1px solid ${C.green}`,
+                borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer",
+              }}>Today</button>
+              <button onClick={nextWeek} style={{
+                padding: "6px 10px", background: "transparent", color: C.text, border: `1px solid ${C.border}`,
+                borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer",
+              }}>›</button>
+              <span style={{ fontSize: 12, color: C.textLight, marginLeft: 8 }}>{weekRangeLabel()}</span>
+            </div>
+          </div>
+
+          {gridLoading && <div style={{ padding: 20, textAlign: "center", color: C.textLight, fontSize: 13 }}>Loading availability...</div>}
+
+          {!gridLoading && (
+            <div style={{ display: "grid", gridTemplateColumns: "50px repeat(7, 1fr)", gap: 0, border: `1px solid ${C.border}`, borderRadius: 8, overflow: "hidden" }}>
+              {/* Header row */}
+              <div style={{ background: C.cream, padding: "8px 4px", fontSize: 11, fontWeight: 600, color: C.textLight, borderBottom: `1px solid ${C.border}`, textAlign: "center" }}></div>
+              {days.map((d, i) => {
+                const isToday = d.toDateString() === new Date().toDateString();
+                return (
+                  <div key={i} style={{
+                    background: isToday ? C.green : C.cream, color: isToday ? C.cream : C.text,
+                    padding: "8px 4px", textAlign: "center", borderBottom: `1px solid ${C.border}`,
+                    borderLeft: `1px solid ${C.border}`,
+                  }}>
+                    <div style={{ fontSize: 10, fontWeight: 600, opacity: 0.8 }}>{d.toLocaleDateString(undefined, { weekday: "short" }).toUpperCase()}</div>
+                    <div style={{ fontSize: 16, fontWeight: 700 }}>{d.getDate()}</div>
+                  </div>
+                );
+              })}
+
+              {/* Hours column */}
+              <div style={{ borderRight: `1px solid ${C.border}` }}>
+                {HOURS.map(h => (
+                  <div key={h} style={{ height: HOUR_HEIGHT, fontSize: 10, color: C.textLight, padding: "2px 6px", textAlign: "right" }}>
+                    {h === 12 ? "12 PM" : h > 12 ? `${h-12} PM` : `${h} AM`}
+                  </div>
+                ))}
+              </div>
+
+              {/* Day columns */}
+              {days.map((day, dayIdx) => (
+                <div key={dayIdx} style={{
+                  position: "relative", borderLeft: dayIdx === 0 ? `1px solid ${C.border}` : "none",
+                  borderRight: `1px solid ${C.border}`, background: C.white,
+                }}>
+                  {/* Hour lines */}
+                  {HOURS.map((h, hIdx) => (
+                    <div key={h} style={{
+                      height: HOUR_HEIGHT,
+                      borderBottom: hIdx < HOURS.length - 1 ? `1px solid ${C.border}50` : "none",
+                    }} />
+                  ))}
+                  {/* Busy blocks */}
+                  {allBusy.map((busy, bIdx) => {
+                    const pos = windowPosition(busy, day);
+                    if (!pos) return null;
+                    return (
+                      <div key={bIdx} title={`${busy.account_email}\n${new Date(busy.starts_at).toLocaleString()} – ${new Date(busy.ends_at).toLocaleString()}${busy.title ? `\n${busy.title}` : ""}`} style={{
+                        position: "absolute", top: pos.top, height: pos.height, left: 2, right: 2,
+                        background: C.green, color: C.cream, borderRadius: 4,
+                        fontSize: 9, padding: "2px 4px", overflow: "hidden", cursor: "pointer", opacity: 0.85,
+                      }}>{busy.title || "Busy"}</div>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div style={{ marginTop: 12, fontSize: 12, color: C.textLight, display: "flex", gap: 16, alignItems: "center" }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ width: 12, height: 12, background: C.green, borderRadius: 2 }}></span> Busy
+            </span>
+            <span>Hover blocks for details · Times shown in your local timezone</span>
+          </div>
+        </div>
+      )}
+
+      {/* Connected accounts */}
       <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: 20 }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 16 }}>Connected accounts</div>
         {loading ? (
@@ -1973,28 +2076,17 @@ const Calendar = ({ user }) => {
         ) : (
           connections.map(conn => (
             <div key={conn.id} style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              padding: "12px 0",
-              borderBottom: `1px solid ${C.border}`,
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+              padding: "12px 0", borderBottom: `1px solid ${C.border}`,
             }}>
               <div>
                 <div style={{ fontWeight: 600, fontSize: 14, color: C.text }}>{conn.account_label || conn.account_email}</div>
                 <div style={{ fontSize: 12, color: providerColor(conn.provider), marginTop: 2 }}>{providerLabel(conn.provider)}</div>
               </div>
               <button onClick={() => disconnectAccount(conn.id)} style={{
-                padding: "6px 12px",
-                background: "transparent",
-                color: C.red,
-                border: `1px solid ${C.red}`,
-                borderRadius: 8,
-                fontSize: 12,
-                fontWeight: 600,
-                cursor: "pointer",
-              }}>
-                Disconnect
-              </button>
+                padding: "6px 12px", background: "transparent", color: C.red, border: `1px solid ${C.red}`,
+                borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer",
+              }}>Disconnect</button>
             </div>
           ))
         )}
