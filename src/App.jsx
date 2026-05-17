@@ -1935,7 +1935,7 @@ const Calendar = ({ user }) => {
   const HOUR_HEIGHT = 36;
   const HOURS = Array.from({ length: HOURS_END - HOURS_START }, (_, i) => HOURS_START + i);
 
-  const days = Array.from({ length: 7 }, (_, i) => {
+  const days = Array.from({ length: 5 }, (_, i) => {
     const d = new Date(weekStart); d.setDate(d.getDate() + i); return d;
   });
 
@@ -1948,11 +1948,12 @@ const Calendar = ({ user }) => {
 
   const weekRangeLabel = () => {
     const start = weekStart.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-    const endD = new Date(weekStart); endD.setDate(endD.getDate() + 6);
+    const endD = new Date(weekStart); endD.setDate(endD.getDate() + 4);
     const end = endD.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
     return `${start} – ${end}`;
   };
 
+  // Returns null if outside visible range, else { top, height } in pixels
   const windowPosition = (busy, day) => {
     const dayStart = new Date(day); dayStart.setHours(HOURS_START, 0, 0, 0);
     const dayEnd = new Date(day); dayEnd.setHours(HOURS_END, 0, 0, 0);
@@ -1962,6 +1963,32 @@ const Calendar = ({ user }) => {
     const top = Math.max(0, (busyStart - dayStart) / 3600000 * HOUR_HEIGHT);
     const bottom = Math.min((dayEnd - dayStart) / 3600000 * HOUR_HEIGHT, (busyEnd - dayStart) / 3600000 * HOUR_HEIGHT);
     return { top, height: Math.max(8, bottom - top) };
+  };
+
+  // Lay out busy blocks for a single day with side-by-side overlap handling
+  const layoutDay = (day) => {
+    const itemsForDay = allBusy
+      .map(b => ({ busy: b, pos: windowPosition(b, day) }))
+      .filter(x => x.pos !== null)
+      .sort((a, b) => a.pos.top - b.pos.top);
+
+    // Group overlapping items into columns (greedy)
+    const placed = [];
+    for (const item of itemsForDay) {
+      const itemBottom = item.pos.top + item.pos.height;
+      // Find a column where this item doesn't overlap with the last one
+      let col = 0;
+      while (true) {
+        const conflicts = placed.some(p => p.col === col && !(p.bottom <= item.pos.top || p.top >= itemBottom));
+        if (!conflicts) break;
+        col++;
+      }
+      placed.push({ ...item, col, top: item.pos.top, bottom: itemBottom });
+    }
+
+    // Determine total cols needed for this day
+    const totalCols = placed.reduce((m, p) => Math.max(m, p.col + 1), 1);
+    return placed.map(p => ({ ...p, totalCols }));
   };
 
   const allBusy = gridData?.users?.flatMap(u => u.busy.map(b => ({ ...b, user_id: u.user_id }))) || [];
@@ -2029,7 +2056,7 @@ const Calendar = ({ user }) => {
           {gridLoading && <div style={{ padding: 20, textAlign: "center", color: C.textLight, fontSize: 13 }}>Loading availability...</div>}
 
           {!gridLoading && (
-            <div style={{ display: "grid", gridTemplateColumns: "50px repeat(7, 1fr)", gap: 0, border: `1px solid ${C.border}`, borderRadius: 8, overflow: "hidden" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "50px repeat(5, 1fr)", gap: 0, border: `1px solid ${C.border}`, borderRadius: 8, overflow: "hidden" }}>
               <div style={{ background: C.cream, padding: "8px 4px", fontSize: 11, fontWeight: 600, color: C.textLight, borderBottom: `1px solid ${C.border}`, textAlign: "center" }}></div>
               {days.map((d, i) => {
                 const isToday = d.toDateString() === new Date().toDateString();
