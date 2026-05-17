@@ -1965,45 +1965,66 @@ const Calendar = ({ user }) => {
     return { top, height: Math.max(8, bottom - top) };
   };
 
-  // Lay out busy blocks for a single day with side-by-side overlap handling.
-  // Algorithm: group overlapping items into "clusters", then assign columns within each cluster.
+  // Lay out busy blocks with side-by-side overlap handling + duplicate dedup.
+  // Two events with the same start/end on the same day are treated as duplicates
+  // (typically the same meeting visible on both Google AND Microsoft).
   const layoutDay = (day) => {
-    const items = allBusy
+    let items = allBusy
       .map((b, idx) => {
         const p = windowPosition(b, day);
         if (!p) return null;
         return { id: idx, busy: b, top: p.top, height: p.height, bottom: p.top + p.height };
       })
-      .filter(Boolean)
-      .sort((a, b) => a.top - b.top || a.bottom - b.bottom);
+      .filter(Boolean);
 
     if (items.length === 0) return [];
 
-    // Build clusters: groups of items that transitively overlap
+    // Dedup: same start AND end times = same meeting from different sources
+    const seen = new Map();
+    for (const it of items) {
+      const key = it.top + "_" + it.bottom;
+      if (!seen.has(key)) seen.set(key, it);
+    }
+    items = Array.from(seen.values());
+
+    // Sort by top, then by bottom
+    items.sort((a, b) => a.top - b.top || a.bottom - b.bottom);
+
+    // Build clusters: a group of items where every item overlaps with at least one other in the group.
+    // We do this by extending a cluster as long as the next item's top is BEFORE the cluster's running max bottom.
     const clusters = [];
+    let currentCluster = null;
     for (const item of items) {
-      // Find an existing cluster this item overlaps with
-      const cluster = clusters.find(cl => cl.maxBottom > item.top);
-      if (cluster) {
-        cluster.items.push(item);
-        cluster.maxBottom = Math.max(cluster.maxBottom, item.bottom);
+      if (currentCluster && item.top < currentCluster.maxBottom) {
+        currentCluster.items.push(item);
+        currentCluster.maxBottom = Math.max(currentCluster.maxBottom, item.bottom);
       } else {
-        clusters.push({ items: [item], maxBottom: item.bottom });
+        currentCluster = { items: [item], maxBottom: item.bottom };
+        clusters.push(currentCluster);
       }
     }
 
-    // Within each cluster, assign each item to the lowest-numbered column where it fits
+    // Within each cluster, place each item in the lowest column where it fits.
+    // A column "fits" if the last item's bottom <= current item's top.
     const result = [];
     for (const cluster of clusters) {
-      const columns = []; // columns[i] = bottom of the last item placed in column i
+      const colBottoms = []; // colBottoms[i] = bottom of the last item placed in column i
       for (const item of cluster.items) {
-        let col = 0;
-        while (col < columns.length && columns[col] > item.top) col++;
-        if (col === columns.length) columns.push(item.bottom);
-        else columns[col] = item.bottom;
-        item.col = col;
+        let placed = false;
+        for (let col = 0; col < colBottoms.length; col++) {
+          if (colBottoms[col] <= item.top) {
+            colBottoms[col] = item.bottom;
+            item.col = col;
+            placed = true;
+            break;
+          }
+        }
+        if (!placed) {
+          item.col = colBottoms.length;
+          colBottoms.push(item.bottom);
+        }
       }
-      const totalCols = columns.length;
+      const totalCols = colBottoms.length;
       for (const item of cluster.items) {
         result.push({ ...item, totalCols });
       }
