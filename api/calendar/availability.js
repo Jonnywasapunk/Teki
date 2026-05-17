@@ -1,9 +1,11 @@
 // api/calendar/availability.js
 // Main availability endpoint — aggregates free/busy across all sources
 // Query params:
-//   start=ISO datetime (default: now)
+//   start=ISO datetime (default: now - 1 day)
 //   end=ISO datetime (default: now + 7 days)
-//   user_ids=comma-separated user IDs (optional, default: all admins)
+//   user_ids=comma-separated user IDs (optional, default: all users with connections)
+//
+// Permission model: any authenticated Teki user can see everyone's busy windows.
 
 import { getUserFromToken, db } from "./lib/supabase.js";
 import { fetchFreeBusy, fetchEvents } from "./lib/google.js";
@@ -19,10 +21,6 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: "Not authenticated" });
   }
 
-  // Check if requester is admin (admins can see everyone; non-admins see only themselves)
-  const { data: adminRow } = await db.select("admins", "user_id=eq." + requester.id);
-  const isAdmin = Array.isArray(adminRow) && adminRow.length > 0;
-
   // Parse query params
   const now = new Date();
   const defaultStart = new Date(now.getTime() - 1 * 24 * 3600 * 1000).toISOString();
@@ -30,19 +28,14 @@ export default async function handler(req, res) {
   const startISO = req.query.start || defaultStart;
   const endISO = req.query.end || defaultEnd;
 
+  // Determine which users to include
+  // Default: all users who have at least one active calendar connection
   let userIds;
   if (req.query.user_ids) {
     userIds = req.query.user_ids.split(",").filter(Boolean);
-    // Non-admin can only request their own data
-    if (!isAdmin) userIds = userIds.filter(id => id === requester.id);
   } else {
-    if (isAdmin) {
-      // Default for admins: all users with connections
-      const { data: allConnections } = await db.select("calendar_connections", "select=user_id");
-      userIds = [...new Set((allConnections || []).map(c => c.user_id))];
-    } else {
-      userIds = [requester.id];
-    }
+    const { data: allConnections } = await db.select("calendar_connections", "select=user_id&is_active=eq.true");
+    userIds = [...new Set((allConnections || []).map(c => c.user_id))];
   }
 
   if (userIds.length === 0) {
@@ -57,7 +50,11 @@ export default async function handler(req, res) {
   );
 
   if (!connections || connections.length === 0) {
-    return res.status(200).json({ start: startISO, end: endISO, users: userIds.map(id => ({ user_id: id, busy: [] })) });
+    return res.status(200).json({
+      start: startISO,
+      end: endISO,
+      users: userIds.map(id => ({ user_id: id, busy: [] })),
+    });
   }
 
   // Fetch all enabled sources for these connections
@@ -85,7 +82,6 @@ export default async function handler(req, res) {
 
     try {
       if (conn.provider === "google") {
-        // Use freeBusy for busy_only sources, events.list for full_details sources
         const busyOnlyCalIds = connSources.filter(s => s.visibility_level === "busy_only").map(s => s.external_id);
         const fullDetailCalIds = connSources.filter(s => s.visibility_level === "full_details").map(s => s.external_id);
 
@@ -109,7 +105,6 @@ export default async function handler(req, res) {
           });
         }
       } else if (conn.provider === "ical") {
-        // iCal: one source per connection (Titan model)
         for (const src of connSources) {
           const events = await fetchIcalBusy(conn, src, startISO, endISO);
           for (const e of events) {
@@ -129,7 +124,6 @@ export default async function handler(req, res) {
 
   await Promise.all(tasks);
 
-  // Sort each user's busy windows chronologically
   for (const uid of Object.keys(userBusy)) {
     userBusy[uid].sort((a, b) => new Date(a.starts_at) - new Date(b.starts_at));
   }

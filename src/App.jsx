@@ -216,6 +216,7 @@ const Icon = ({ name, size = 18, color = "currentColor" }) => {
     invoice:   "M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z M14 2v6h6 M12 18v-6 M9 15h6",
     users2:    "M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2 M12 7a4 4 0 100 8 4 4 0 000-8z M22 21v-2a4 4 0 00-3-3.87 M16 3.13a4 4 0 010 7.75",
     alert:     "M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z M12 9v4 M12 17h.01",
+    calendar:  "M19 4H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2V6a2 2 0 00-2-2z M16 2v4 M8 2v4 M3 10h18",
   };
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
@@ -1828,6 +1829,10 @@ const Calendar = ({ user }) => {
     return d;
   });
 
+  // Only this email can disconnect
+  const OWNER_EMAIL = "jonathan.rivas@dcdbgroup.com";
+  const isOwner = user?.email === OWNER_EMAIL;
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const status = params.get("calendar_status");
@@ -1839,12 +1844,13 @@ const Calendar = ({ user }) => {
     }
   }, []);
 
+  // Load ALL connections (everyone's) so the assistant can see who's connected
   const loadConnections = async () => {
     if (!user?.id) return;
     setLoading(true);
     try {
       const token = await getValidToken();
-      const r = await fetch(`${SUPABASE_URL}/rest/v1/calendar_connections?user_id=eq.${user.id}&order=created_at.desc`, {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/calendar_connections?is_active=eq.true&order=created_at.desc`, {
         headers: { "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}` },
       });
       if (r.ok) {
@@ -1871,7 +1877,8 @@ const Calendar = ({ user }) => {
   };
 
   useEffect(() => { loadConnections(); }, [user?.id]);
-  useEffect(() => { if (connections.length > 0) loadAvailability(); }, [connections.length, weekStart]);
+  useEffect(() => { loadAvailability(); }, [weekStart]);
+  useEffect(() => { if (connections.length > 0) loadAvailability(); }, [connections.length]);
 
   const connectGoogle = async () => {
     setConnecting(true);
@@ -1884,25 +1891,37 @@ const Calendar = ({ user }) => {
     } catch (e) { setToast({ type: "error", message: e.message || "Network error" }); setConnecting(false); }
   };
 
+  // Server-side hard-gated delete: backend checks email
   const disconnectAccount = async (connectionId) => {
-    if (!confirm("Disconnect this calendar? You'll need to reauthorize to use it again.")) return;
+    if (!isOwner) {
+      setToast({ type: "error", message: "Only the account owner can disconnect calendars" });
+      return;
+    }
+    if (!confirm("Disconnect this calendar? It will need to be reauthorized to use again.")) return;
     try {
       const token = await getValidToken();
-      await fetch(`${SUPABASE_URL}/rest/v1/calendar_connections?id=eq.${connectionId}`, {
+      const r = await fetch(`/api/calendar/connections/delete?id=${connectionId}`, {
         method: "DELETE",
-        headers: { "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}` },
+        headers: { "Authorization": `Bearer ${token}` },
       });
+      const data = await r.json();
+      if (!r.ok || data.error) {
+        setToast({ type: "error", message: data.error || "Failed to disconnect" });
+        return;
+      }
+      setToast({ type: "success", message: "Calendar disconnected" });
+      setTimeout(() => setToast(null), 4000);
       loadConnections();
-    } catch (e) { setToast({ type: "error", message: "Failed to disconnect" }); }
+    } catch (e) { setToast({ type: "error", message: e.message || "Failed to disconnect" }); }
   };
 
   const providerLabel = (p) => ({ google: "Google", microsoft: "Microsoft", ical: "iCal Feed" }[p] || p);
   const providerColor = (p) => ({ google: "#4285F4", microsoft: "#00A4EF", ical: "#888888" }[p] || C.textLight);
 
   // ── WEEKLY GRID HELPERS ────────────────────────────────────────────────
-  const HOURS_START = 7;  // 7 AM
-  const HOURS_END = 22;   // 10 PM
-  const HOUR_HEIGHT = 36; // pixels per hour
+  const HOURS_START = 7;
+  const HOURS_END = 22;
+  const HOUR_HEIGHT = 36;
   const HOURS = Array.from({ length: HOURS_END - HOURS_START }, (_, i) => HOURS_START + i);
 
   const days = Array.from({ length: 7 }, (_, i) => {
@@ -1923,19 +1942,17 @@ const Calendar = ({ user }) => {
     return `${start} – ${end}`;
   };
 
-  // Compute pixel-position of a busy window within a given day
   const windowPosition = (busy, day) => {
     const dayStart = new Date(day); dayStart.setHours(HOURS_START, 0, 0, 0);
     const dayEnd = new Date(day); dayEnd.setHours(HOURS_END, 0, 0, 0);
     const busyStart = new Date(busy.starts_at);
     const busyEnd = new Date(busy.ends_at);
-    if (busyEnd <= dayStart || busyStart >= dayEnd) return null; // not in visible range
+    if (busyEnd <= dayStart || busyStart >= dayEnd) return null;
     const top = Math.max(0, (busyStart - dayStart) / 3600000 * HOUR_HEIGHT);
     const bottom = Math.min((dayEnd - dayStart) / 3600000 * HOUR_HEIGHT, (busyEnd - dayStart) / 3600000 * HOUR_HEIGHT);
     return { top, height: Math.max(8, bottom - top) };
   };
 
-  // Filter all busy windows for the visible week
   const allBusy = gridData?.users?.flatMap(u => u.busy.map(b => ({ ...b, user_id: u.user_id }))) || [];
 
   return (
@@ -1957,7 +1974,7 @@ const Calendar = ({ user }) => {
         </div>
       )}
 
-      {/* Setup card (compact when calendars exist) */}
+      {/* Setup card */}
       <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: 20, marginBottom: 16 }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>Connect a calendar</div>
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
@@ -1976,7 +1993,7 @@ const Calendar = ({ user }) => {
         </div>
       </div>
 
-      {/* Weekly grid */}
+      {/* Weekly grid — always show if anyone has connections */}
       {connections.length > 0 && (
         <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: 20, marginBottom: 16 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
@@ -2002,7 +2019,6 @@ const Calendar = ({ user }) => {
 
           {!gridLoading && (
             <div style={{ display: "grid", gridTemplateColumns: "50px repeat(7, 1fr)", gap: 0, border: `1px solid ${C.border}`, borderRadius: 8, overflow: "hidden" }}>
-              {/* Header row */}
               <div style={{ background: C.cream, padding: "8px 4px", fontSize: 11, fontWeight: 600, color: C.textLight, borderBottom: `1px solid ${C.border}`, textAlign: "center" }}></div>
               {days.map((d, i) => {
                 const isToday = d.toDateString() === new Date().toDateString();
@@ -2018,7 +2034,6 @@ const Calendar = ({ user }) => {
                 );
               })}
 
-              {/* Hours column */}
               <div style={{ borderRight: `1px solid ${C.border}` }}>
                 {HOURS.map(h => (
                   <div key={h} style={{ height: HOUR_HEIGHT, fontSize: 10, color: C.textLight, padding: "2px 6px", textAlign: "right" }}>
@@ -2027,20 +2042,17 @@ const Calendar = ({ user }) => {
                 ))}
               </div>
 
-              {/* Day columns */}
               {days.map((day, dayIdx) => (
                 <div key={dayIdx} style={{
                   position: "relative", borderLeft: dayIdx === 0 ? `1px solid ${C.border}` : "none",
                   borderRight: `1px solid ${C.border}`, background: C.white,
                 }}>
-                  {/* Hour lines */}
                   {HOURS.map((h, hIdx) => (
                     <div key={h} style={{
                       height: HOUR_HEIGHT,
                       borderBottom: hIdx < HOURS.length - 1 ? `1px solid ${C.border}50` : "none",
                     }} />
                   ))}
-                  {/* Busy blocks */}
                   {allBusy.map((busy, bIdx) => {
                     const pos = windowPosition(busy, day);
                     if (!pos) return null;
@@ -2066,7 +2078,7 @@ const Calendar = ({ user }) => {
         </div>
       )}
 
-      {/* Connected accounts */}
+      {/* Connected accounts — shown to everyone; Disconnect only for owner */}
       <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: 20 }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 16 }}>Connected accounts</div>
         {loading ? (
@@ -2083,10 +2095,12 @@ const Calendar = ({ user }) => {
                 <div style={{ fontWeight: 600, fontSize: 14, color: C.text }}>{conn.account_label || conn.account_email}</div>
                 <div style={{ fontSize: 12, color: providerColor(conn.provider), marginTop: 2 }}>{providerLabel(conn.provider)}</div>
               </div>
-              <button onClick={() => disconnectAccount(conn.id)} style={{
-                padding: "6px 12px", background: "transparent", color: C.red, border: `1px solid ${C.red}`,
-                borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer",
-              }}>Disconnect</button>
+              {isOwner && (
+                <button onClick={() => disconnectAccount(conn.id)} style={{
+                  padding: "6px 12px", background: "transparent", color: C.red, border: `1px solid ${C.red}`,
+                  borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                }}>Disconnect</button>
+              )}
             </div>
           ))
         )}
