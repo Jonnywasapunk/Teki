@@ -1805,6 +1805,285 @@ const AdminView = ({ allTasks, allContacts, allUsers, setAllTasks, setAllContact
   );
 };
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CALENDAR MODULE — Phase 1 (Connect Google + iCal)
+// ─────────────────────────────────────────────────────────────────────────────
+const Calendar = ({ user }) => {
+  const [connections, setConnections] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [connecting, setConnecting] = useState(false);
+  const [toast, setToast] = useState(null);
+  const [showIcalModal, setShowIcalModal] = useState(false);
+
+  // Capture OAuth callback params on mount
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const status = params.get("calendar_status");
+    const message = params.get("message");
+    if (status) {
+      setToast({ type: status, message: message || (status === "success" ? "Calendar connected" : "Something went wrong") });
+      // Clean URL
+      window.history.replaceState({}, "", window.location.pathname);
+      // Auto-dismiss after 6 seconds
+      setTimeout(() => setToast(null), 6000);
+    }
+  }, []);
+
+  const loadConnections = async () => {
+    if (!user?.id) return;
+    setLoading(true);
+    try {
+      const token = await getValidToken();
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/calendar_connections?user_id=eq.${user.id}&order=created_at.desc`, {
+        headers: {
+          "apikey": SUPABASE_ANON,
+          "Authorization": `Bearer ${token}`,
+        },
+      });
+      if (r.ok) {
+        const data = await r.json();
+        setConnections(Array.isArray(data) ? data : []);
+      }
+    } catch (e) {
+      console.error("Failed to load connections:", e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { loadConnections(); }, [user?.id]);
+
+  const connectGoogle = async () => {
+    setConnecting(true);
+    try {
+      const token = await getValidToken();
+      const r = await fetch("/api/calendar/connect/google", {
+        headers: { "Authorization": `Bearer ${token}` },
+      });
+      const data = await r.json();
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        setToast({ type: "error", message: data.error || "Failed to start Google OAuth" });
+        setConnecting(false);
+      }
+    } catch (e) {
+      setToast({ type: "error", message: e.message || "Network error" });
+      setConnecting(false);
+    }
+  };
+
+  const disconnectAccount = async (connectionId) => {
+    if (!confirm("Disconnect this calendar? You'll need to reauthorize to use it again.")) return;
+    try {
+      const token = await getValidToken();
+      await fetch(`${SUPABASE_URL}/rest/v1/calendar_connections?id=eq.${connectionId}`, {
+        method: "DELETE",
+        headers: {
+          "apikey": SUPABASE_ANON,
+          "Authorization": `Bearer ${token}`,
+        },
+      });
+      loadConnections();
+    } catch (e) {
+      setToast({ type: "error", message: "Failed to disconnect" });
+    }
+  };
+
+  const providerLabel = (p) => ({ google: "Google", microsoft: "Microsoft", ical: "iCal Feed" }[p] || p);
+  const providerColor = (p) => ({ google: "#4285F4", microsoft: "#00A4EF", ical: "#888888" }[p] || C.textLight);
+
+  return (
+    <div style={{ padding: 20, maxWidth: 800, margin: "0 auto" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+        <span style={{ fontFamily: "'Cormorant Garamond', Georgia, serif", fontSize: 24, fontWeight: 700, color: C.green }}>Calendar</span>
+      </div>
+
+      {toast && (
+        <div style={{
+          padding: "12px 16px",
+          marginBottom: 16,
+          borderRadius: 12,
+          background: toast.type === "success" ? "#E8F5E9" : "#FFEBEE",
+          border: `1px solid ${toast.type === "success" ? "#4CAF50" : "#F44336"}`,
+          color: toast.type === "success" ? "#1B5E20" : "#B71C1C",
+          fontSize: 14,
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+        }}>
+          <span>{toast.message}</span>
+          <button onClick={() => setToast(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "inherit", fontSize: 18 }}>×</button>
+        </div>
+      )}
+
+      <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: 20, marginBottom: 16 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 16 }}>Connect a calendar</div>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <button onClick={connectGoogle} disabled={connecting} style={{
+            padding: "12px 20px",
+            background: "#4285F4",
+            color: "#fff",
+            border: "none",
+            borderRadius: 10,
+            fontSize: 14,
+            fontWeight: 600,
+            cursor: connecting ? "not-allowed" : "pointer",
+            opacity: connecting ? 0.6 : 1,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+          }}>
+            {connecting ? "Connecting..." : "Connect Google"}
+          </button>
+          <button onClick={() => setShowIcalModal(true)} style={{
+            padding: "12px 20px",
+            background: C.green,
+            color: C.cream,
+            border: "none",
+            borderRadius: 10,
+            fontSize: 14,
+            fontWeight: 600,
+            cursor: "pointer",
+          }}>
+            Add iCal Feed
+          </button>
+          <button disabled style={{
+            padding: "12px 20px",
+            background: C.cream,
+            color: C.textLight,
+            border: `1px solid ${C.border}`,
+            borderRadius: 10,
+            fontSize: 14,
+            fontWeight: 600,
+            cursor: "not-allowed",
+          }}>
+            Microsoft (coming soon)
+          </button>
+        </div>
+      </div>
+
+      <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 16, padding: 20 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 16 }}>Connected accounts</div>
+        {loading ? (
+          <div style={{ padding: 24, textAlign: "center", color: C.textLight, fontSize: 14 }}>Loading...</div>
+        ) : connections.length === 0 ? (
+          <div style={{ padding: 24, textAlign: "center", color: C.textLight, fontSize: 14 }}>No calendars connected yet. Use the buttons above to connect Google or add an iCal feed.</div>
+        ) : (
+          connections.map(conn => (
+            <div key={conn.id} style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "12px 0",
+              borderBottom: `1px solid ${C.border}`,
+            }}>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 14, color: C.text }}>{conn.account_label || conn.account_email}</div>
+                <div style={{ fontSize: 12, color: providerColor(conn.provider), marginTop: 2 }}>{providerLabel(conn.provider)}</div>
+              </div>
+              <button onClick={() => disconnectAccount(conn.id)} style={{
+                padding: "6px 12px",
+                background: "transparent",
+                color: C.red,
+                border: `1px solid ${C.red}`,
+                borderRadius: 8,
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: "pointer",
+              }}>
+                Disconnect
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+
+      {showIcalModal && <IcalModal user={user} onClose={() => setShowIcalModal(false)} onSaved={() => { setShowIcalModal(false); loadConnections(); setToast({ type: "success", message: "iCal feed added" }); setTimeout(() => setToast(null), 4000); }} />}
+    </div>
+  );
+};
+
+const IcalModal = ({ user, onClose, onSaved }) => {
+  const [email, setEmail] = useState("");
+  const [url, setUrl] = useState("");
+  const [label, setLabel] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  const save = async () => {
+    setError(null);
+    if (!email || !url) { setError("Email and URL are required"); return; }
+    setSaving(true);
+    try {
+      const token = await getValidToken();
+      const r = await fetch("/api/calendar/connect/ical", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ ical_url: url, account_email: email, account_label: label || email }),
+      });
+      const data = await r.json();
+      if (!r.ok || data.error) {
+        setError(data.error + (data.details ? ` (${data.details})` : ""));
+        setSaving(false);
+        return;
+      }
+      onSaved();
+    } catch (e) {
+      setError(e.message || "Network error");
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex",
+      alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20,
+    }}>
+      <div style={{ background: C.white, borderRadius: 16, padding: 24, maxWidth: 480, width: "100%" }}>
+        <div style={{ fontFamily: "'Cormorant Garamond', Georgia, serif", fontSize: 22, fontWeight: 700, color: C.green, marginBottom: 16 }}>Add iCal Feed</div>
+
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: C.textLight, marginBottom: 4 }}>Account email</div>
+          <input value={email} onChange={e => setEmail(e.target.value)} placeholder="jonathan.rivas@dcventures.vc" style={{
+            width: "100%", padding: "10px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontFamily: "inherit",
+          }} />
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: C.textLight, marginBottom: 4 }}>iCal URL</div>
+          <input value={url} onChange={e => setUrl(e.target.value)} placeholder="https://dav.titan.email/feed/..." style={{
+            width: "100%", padding: "10px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontFamily: "inherit",
+          }} />
+        </div>
+
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: C.textLight, marginBottom: 4 }}>Label (optional)</div>
+          <input value={label} onChange={e => setLabel(e.target.value)} placeholder="DC Ventures" style={{
+            width: "100%", padding: "10px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 14, fontFamily: "inherit",
+          }} />
+        </div>
+
+        {error && <div style={{ padding: 10, background: "#FFEBEE", color: "#B71C1C", borderRadius: 8, fontSize: 13, marginBottom: 12 }}>{error}</div>}
+
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button onClick={onClose} disabled={saving} style={{
+            padding: "10px 16px", background: "transparent", color: C.text, border: `1px solid ${C.border}`,
+            borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: "pointer",
+          }}>Cancel</button>
+          <button onClick={save} disabled={saving} style={{
+            padding: "10px 16px", background: C.green, color: C.cream, border: "none",
+            borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.6 : 1,
+          }}>{saving ? "Saving..." : "Save"}</button>
+        </div>
+      </div>
+    </div>
+  );
+};
 export default function Teki() {
   const [user, setUser] = useState(null);
   const [appLoading, setAppLoading] = useState(true);
@@ -1893,6 +2172,7 @@ export default function Teki() {
     { id: "tasks",    label: "Tasks",    icon: "task" },
     { id: "pipeline", label: "Pipeline", icon: "users" },
     { id: "projects", label: "Projects", icon: "briefcase" },
+    { id: "calendar", label: "Calendar", icon: "calendar" },
     ...((isAdmin || isBilling) ? [{ id: "billing", label: "Billing", icon: "invoice" }] : []),
     ...(isAdmin ? [{ id: "admin", label: "Admin", icon: "eye" }] : []),
   ];
@@ -1927,6 +2207,7 @@ export default function Teki() {
       {tab === "tasks"    && <Tasks tasks={tasks} setTasks={setTasks} user={normalizedUser} />}
       {tab === "pipeline" && <CRM contacts={contacts} setContacts={setContacts} user={normalizedUser} />}
       {tab === "projects" && <ProjectsView tasks={tasks} contacts={contacts} />}
+      {tab === "calendar" && <Calendar user={normalizedUser} />}
       {tab === "billing"  && (isAdmin || isBilling) && <Billing contacts={contacts} user={normalizedUser} />}
       {tab === "admin"    && isAdmin && <AdminView allTasks={allTasks} allContacts={allContacts} allUsers={allUsers} setAllTasks={setAllTasks} setAllContacts={setAllContacts} />}
     </>
