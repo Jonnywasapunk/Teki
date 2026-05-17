@@ -10,6 +10,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@microsoft/microsoft-graph-client": "^3.0.7",
+    "googleapis": "^171.4.0",
+    "node-ical": "^0.26.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
   },

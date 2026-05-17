@@ -14,6 +14,36 @@ const SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
 // If using Vite: npm install @supabase/supabase-js
 // Then replace this block with: import { createClient } from '@supabase/supabase-js'
 // const supabase = createClient(SUPABASE_URL, SUPABASE_ANON)
+
+// Global token helper with auto-refresh — checks expiry and refreshes if needed
+async function getValidToken() {
+  let session = null;
+  try { session = JSON.parse(localStorage.getItem("teki_session")); } catch { return SUPABASE_ANON; }
+  if (!session?.access_token) return SUPABASE_ANON;
+  // Check if token is expired or expires within 60 seconds
+  let exp = session.expires_at;
+  if (!exp && session.access_token) {
+    try { exp = JSON.parse(atob(session.access_token.split(".")[1])).exp; } catch { exp = 0; }
+  }
+  const now = Math.floor(Date.now() / 1000);
+  if (exp && exp - now > 60) return session.access_token;
+  // Token expired or near expiry — refresh it
+  if (!session.refresh_token) return SUPABASE_ANON;
+  try {
+    const r = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON },
+      body: JSON.stringify({ refresh_token: session.refresh_token }),
+    });
+    const refreshed = await r.json();
+    if (refreshed.access_token) {
+      localStorage.setItem("teki_session", JSON.stringify(refreshed));
+      return refreshed.access_token;
+    }
+  } catch {}
+  return session.access_token; // fallback to old token
+}
+
 const supabase = (() => {
   const headers = (token) => ({
     "Content-Type": "application/json",
@@ -58,7 +88,12 @@ const supabase = (() => {
 
   const from = (table) => {
     const base = `${SUPABASE_URL}/rest/v1/${table}`;
-    const h = () => headers(_session?.access_token);
+    const h = () => {
+      // Always read latest session from localStorage (in case it was refreshed)
+      let s = _session;
+      try { const stored = JSON.parse(localStorage.getItem("teki_session")); if (stored) s = stored; } catch {}
+      return headers(s?.access_token);
+    };
     return {
       select: (cols = "*") => ({
         eq: (col, val) => ({
@@ -81,7 +116,12 @@ const supabase = (() => {
           method: "POST",
           headers: { ...h(), Prefer: "return=representation" },
           body: JSON.stringify(Array.isArray(rows) ? rows : [rows]),
-        }).then(r => r.json()).then(data => ({ data: Array.isArray(data) ? data : [data], error: null })),
+        }).then(async r => {
+          const text = await r.text();
+          let data = null;
+          try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+          return { data: Array.isArray(data) ? data : (data ? [data] : []), error: null };
+        }),
       update: (vals) => ({
         eq: (col, val) =>
           fetch(`${base}?${col}=eq.${encodeURIComponent(val)}`, {
@@ -443,7 +483,7 @@ const Dashboard = ({ tasks, contacts, user }) => {
             const proj = PROJECTS.find(p => p.id === c.project);
             return (
               <div key={c.id} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "12px 16px", marginBottom: 8, display: "flex", alignItems: "center", gap: 12 }}>
-                <div style={{ width: 36, height: 36, borderRadius: 8, background: C.gold + "20", display: "flex", alignItems: "center", justifyContent: "center", color: C.gold, fontWeight: 800, fontSize: 15, flexShrink: 0 }}>{c.name[0]}</div>
+                <div style={{ width: 36, height: 36, borderRadius: 8, background: C.gold + "20", display: "flex", alignItems: "center", justifyContent: "center", color: C.gold, fontWeight: 800, fontSize: 15, flexShrink: 0 }}>{(c.name || "?")[0].toUpperCase()}</div>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 600, fontSize: 14, color: C.text }}>{c.name}</div>
                   <div style={{ fontSize: 12, color: C.textLight }}>{c.company}</div>
@@ -548,6 +588,30 @@ const Tasks = ({ tasks, setTasks, user }) => {
   const [form, setForm] = useState({ title: "", project: "other", priority: "normal", notes: "", deadline: "" });
   const [filter, setFilter] = useState("all");
   const [listening, setListening] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  const [editForm, setEditForm] = useState({ title: "", project: "other", priority: "normal", notes: "", deadline: "" });
+
+  const saveEditTask = async () => {
+    if (!editForm.title.trim()) { alert("Title is required."); return; }
+    if (!editForm.deadline) { alert("Deadline is required."); return; }
+    const updates = {
+      title: editForm.title,
+      project: editForm.project,
+      priority: editForm.priority,
+      notes: editForm.notes || null,
+      deadline: editForm.deadline,
+    };
+    const token = await getValidToken();
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/tasks?id=eq.${detail.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}`, "Prefer": "return=minimal" },
+      body: JSON.stringify(updates),
+    });
+    if (!res.ok) { const err = await res.text(); alert("Error saving:\n" + err); return; }
+    setTasks(prev => prev.map(t => t.id === detail.id ? { ...t, ...updates } : t));
+    setDetail(prev => ({ ...prev, ...updates }));
+    setEditMode(false);
+  };
 
   // Request notification permission on mount
   useEffect(() => {
@@ -568,16 +632,34 @@ const Tasks = ({ tasks, setTasks, user }) => {
   const addTask = async () => {
     if (!form.title.trim()) { alert("Please enter a task title."); return; }
     if (!form.deadline) { alert("Please set a deadline — it's required."); return; }
-    const row = { ...form, task_notes: [], done: false, user_id: user.id, created_at: new Date().toISOString() };
-    const { data } = await supabase.from("tasks").insert(row);
-    const saved = Array.isArray(data) && data[0] ? data[0] : null;
-    if (!saved) {
-      const { data: refreshed } = await supabase.from("tasks").select("*").eq("user_id", user.id).order("created_at", { ascending: false });
-      if (refreshed) setTasks(refreshed);
-    } else {
-      scheduleDeadlineNotification(saved);
-      setTasks(prev => [saved, ...prev]);
+    const cleanRow = {
+      title: form.title,
+      project: form.project,
+      priority: form.priority,
+      notes: form.notes || null,
+      deadline: form.deadline,
+      task_notes: [],
+      done: false,
+      user_id: user.id,
+      created_at: new Date().toISOString(),
+    };
+    const token = await getValidToken();
+    const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/tasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}`, "Prefer": "return=minimal" },
+      body: JSON.stringify(cleanRow),
+    });
+    if (!insertRes.ok) {
+      const errText = await insertRes.text();
+      alert("Error saving task:\n" + errText);
+      return;
     }
+    const token2 = await getValidToken();
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/tasks?user_id=eq.${user.id}&order=created_at.desc`, {
+      headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token2}` },
+    });
+    const refreshed = await res.json();
+    if (Array.isArray(refreshed)) setTasks(refreshed);
     setModal(false); setForm({ title: "", project: "other", priority: "normal", notes: "", deadline: "" });
   };
 
@@ -697,15 +779,40 @@ const Tasks = ({ tasks, setTasks, user }) => {
         <button style={btnPrimary} onClick={addTask}>Add Task</button>
       </Modal>
 
-      <Modal open={!!detail} onClose={() => setDetail(null)} title={detail?.title || ""} wide>
+      <Modal open={!!detail} onClose={() => { setDetail(null); setEditMode(false); }} title={detail?.title || ""} wide>
         {detail && (
           <>
-            <div style={{ marginBottom: 20 }}>
-              {(() => { const proj = PROJECTS.find(p => p.id === detail.project); return proj ? <Badge color={proj.color} label={proj.name} /> : null; })()}
-              {detail.priority === "high" && <span style={{ marginLeft: 6 }}><Badge color={C.red} label="High Priority" /></span>}
-              {detail.deadline && <div style={{ marginTop: 8 }}><DeadlineBadge deadline={detail.deadline} done={detail.done} /></div>}
-              {detail.notes && <div style={{ fontSize: 13, color: C.textMid, marginTop: 10, background: C.creamDark, borderRadius: 10, padding: "10px 14px" }}>{detail.notes}</div>}
-            </div>
+            {!editMode ? (
+              <>
+                <div style={{ marginBottom: 20 }}>
+                  {(() => { const proj = PROJECTS.find(p => p.id === detail.project); return proj ? <Badge color={proj.color} label={proj.name} /> : null; })()}
+                  {detail.priority === "high" && <span style={{ marginLeft: 6 }}><Badge color={C.red} label="High Priority" /></span>}
+                  {detail.deadline && <div style={{ marginTop: 8 }}><DeadlineBadge deadline={detail.deadline} done={detail.done} /></div>}
+                  {detail.notes && <div style={{ fontSize: 13, color: C.textMid, marginTop: 10, background: C.creamDark, borderRadius: 10, padding: "10px 14px" }}>{detail.notes}</div>}
+                </div>
+                <button onClick={() => { setEditForm({ title: detail.title, project: detail.project, priority: detail.priority, notes: detail.notes || "", deadline: detail.deadline ? detail.deadline.slice(0, 16) : "" }); setEditMode(true); }} style={{ ...btnSecondary, marginBottom: 20 }}>
+                  ✏️ Edit Task
+                </button>
+              </>
+            ) : (
+              <div style={{ marginBottom: 20, background: C.creamDark, borderRadius: 12, padding: 16 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Edit Task</div>
+                <input style={{ ...inputStyle, marginBottom: 10 }} placeholder="Title" value={editForm.title} onChange={e => setEditForm(f => ({ ...f, title: e.target.value }))} />
+                <input type="datetime-local" style={{ ...inputStyle, marginBottom: 10 }} value={editForm.deadline} onChange={e => setEditForm(f => ({ ...f, deadline: e.target.value }))} />
+                <select style={{ ...selectStyle, marginBottom: 10 }} value={editForm.project} onChange={e => setEditForm(f => ({ ...f, project: e.target.value }))}>
+                  {PROJECTS.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+                <select style={{ ...selectStyle, marginBottom: 10 }} value={editForm.priority} onChange={e => setEditForm(f => ({ ...f, priority: e.target.value }))}>
+                  <option value="normal">Normal priority</option>
+                  <option value="high">High priority</option>
+                </select>
+                <textarea style={{ ...inputStyle, minHeight: 70, resize: "vertical", marginBottom: 12 }} placeholder="Notes" value={editForm.notes} onChange={e => setEditForm(f => ({ ...f, notes: e.target.value }))} />
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button style={{ ...btnPrimary, marginTop: 0, flex: 1 }} onClick={saveEditTask}>Save Changes</button>
+                  <button style={{ ...btnSecondary, marginTop: 0, flex: 0.5 }} onClick={() => setEditMode(false)}>Cancel</button>
+                </div>
+              </div>
+            )}
             <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 20, marginBottom: 20 }}>
               <NotesThread notes={detail.task_notes || []} onAdd={addTaskNote} />
             </div>
@@ -737,39 +844,99 @@ const CRM = ({ contacts, setContacts, user }) => {
   const [personForm, setPersonForm] = useState(BLANK_PERSON);
   const [engLetterFile, setEngLetterFile] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [editDealMode, setEditDealMode] = useState(false);
+  const [editDealForm, setEditDealForm] = useState({ name: "", company: "", project: "other", amount: "", currency: "USD", notes: "", is_referral: false, referrer_name: "", referrer_commission: "" });
 
-  const getToken = () => {
-    try { return JSON.parse(localStorage.getItem("teki_session"))?.access_token || SUPABASE_ANON; } catch { return SUPABASE_ANON; }
+  const saveEditDeal = async () => {
+    if (!editDealForm.name.trim()) { alert("Company name is required."); return; }
+    if (!editDealForm.amount) { alert("Amount is required."); return; }
+    const updates = {
+      name: editDealForm.name,
+      company: editDealForm.company || null,
+      project: editDealForm.project,
+      amount: editDealForm.amount ? Number(editDealForm.amount) : null,
+      currency: editDealForm.currency,
+      notes: editDealForm.notes || null,
+      is_referral: !!editDealForm.is_referral,
+      referrer_name: editDealForm.referrer_name || null,
+      referrer_commission: editDealForm.referrer_commission || null,
+    };
+    const token = await getValidToken();
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/contacts?id=eq.${detail.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}`, "Prefer": "return=minimal" },
+      body: JSON.stringify(updates),
+    });
+    if (!res.ok) { const err = await res.text(); alert("Error saving:\n" + err); return; }
+    setContacts(prev => prev.map(c => c.id === detail.id ? { ...c, ...updates } : c));
+    setDetail(prev => ({ ...prev, ...updates }));
+    setEditDealMode(false);
   };
 
   const uploadEngagementLetter = async (file, contactId) => {
     if (!file) return null;
     setUploading(true);
-    const path = `engagement-letters/${contactId}/${Date.now()}-${file.name}`;
-    const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${path}`, {
-      method: "POST",
-      headers: { "apikey": SUPABASE_ANON, "Authorization": `Bearer ${getToken()}`, "Content-Type": file.type, "x-upsert": "true" },
-      body: file,
-    });
-    setUploading(false);
-    if (res.ok) return `${SUPABASE_URL}/storage/v1/object/public/${path}`;
-    alert("Upload failed — make sure a public bucket called 'engagement-letters' exists in Supabase Storage.");
-    return null;
+    try {
+      const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, "_");
+      const path = `${contactId}/${Date.now()}-${safeName}`;
+      const token = await getValidToken();
+      const res = await fetch(`${SUPABASE_URL}/storage/v1/object/engagement-letters/${path}`, {
+        method: "POST",
+        headers: { "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}`, "Content-Type": file.type, "x-upsert": "true" },
+        body: file,
+      });
+      setUploading(false);
+      if (res.ok) return `${SUPABASE_URL}/storage/v1/object/public/engagement-letters/${path}`;
+      const errText = await res.text();
+      alert("Upload failed:\n" + errText + "\n\nMake sure:\n1. A public bucket called 'engagement-letters' exists in Supabase Storage\n2. RLS policies allow authenticated users to upload");
+      return null;
+    } catch (err) {
+      setUploading(false);
+      alert("Upload error: " + err.message);
+      return null;
+    }
   };
 
   const addContact = async () => {
     if (!form.name.trim()) { alert("Please enter a company name."); return; }
     if (!form.amount) { alert("Deal amount is required."); return; }
-    const row = { ...form, outreach: [], contact_notes: [], people: [], user_id: user.id, created_at: new Date().toISOString() };
-    const { data } = await supabase.from("contacts").insert(row);
-    const saved = Array.isArray(data) && data[0] ? data[0] : null;
-    if (!saved) {
-      // Fallback: reload contacts from Supabase to get the real row
-      const { data: refreshed } = await supabase.from("contacts").select("*").eq("user_id", user.id).order("created_at", { ascending: false });
-      if (refreshed) setContacts(refreshed);
-    } else {
-      setContacts(prev => [saved, ...prev]);
+    const cleanRow = {
+      name: form.name,
+      company: form.company || null,
+      project: form.project,
+      status: form.status,
+      notes: form.notes || null,
+      amount: form.amount ? Number(form.amount) : null,
+      currency: form.currency,
+      is_referral: !!form.is_referral,
+      referrer_name: form.referrer_name || null,
+      referrer_commission: form.referrer_commission || null,
+      engagement_letter_url: form.engagement_letter_url || null,
+      engagement_letter_status: form.engagement_letter_status || "Pending",
+      engagement_amount: form.engagement_amount ? Number(form.engagement_amount) : null,
+      outreach: [],
+      contact_notes: [],
+      people: [],
+      user_id: user.id,
+      created_at: new Date().toISOString(),
+    };
+    const token = await getValidToken();
+    const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/contacts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}`, "Prefer": "return=minimal" },
+      body: JSON.stringify(cleanRow),
+    });
+    if (!insertRes.ok) {
+      const errText = await insertRes.text();
+      alert("Error saving deal:\n" + errText);
+      return;
     }
+    const token2 = await getValidToken();
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/contacts?user_id=eq.${user.id}&order=created_at.desc`, {
+      headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token2}` },
+    });
+    const refreshed = await res.json();
+    if (Array.isArray(refreshed)) setContacts(refreshed);
     setModal(false); setForm(BLANK_FORM);
   };
 
@@ -833,7 +1000,9 @@ const CRM = ({ contacts, setContacts, user }) => {
     setDetail(null);
   };
 
-  const filtered = filter === "all" ? contacts : contacts.filter(c => c.status === filter);
+  const filtered = filter === "all"
+    ? contacts.filter(c => c.status !== "Closed" && c.status !== "Not interested")
+    : contacts.filter(c => c.status === filter);
 
   const ContactLink = ({ icon, value, href }) => {
     if (!value) return null;
@@ -861,7 +1030,7 @@ const CRM = ({ contacts, setContacts, user }) => {
             background: filter === s ? C.green : C.white, color: filter === s ? C.cream : C.textMid,
             border: `1.5px solid ${filter === s ? C.green : C.border}`,
             borderRadius: 20, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0,
-          }}>{s === "all" ? "All" : s}</button>
+          }}>{s === "all" ? "Active" : s}</button>
         ))}
       </div>
 
@@ -875,7 +1044,7 @@ const CRM = ({ contacts, setContacts, user }) => {
           <div key={c.id} onClick={() => { setDetail(c); setOutreachNote(""); setAddingPerson(false); setPersonForm(BLANK_PERSON); setEngLetterFile(null); }}
             style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "14px 16px", marginBottom: 10, cursor: "pointer" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{ width: 40, height: 40, borderRadius: 10, background: (proj?.color || C.green) + "20", display: "flex", alignItems: "center", justifyContent: "center", color: proj?.color || C.green, fontWeight: 800, fontSize: 16, flexShrink: 0 }}>{c.name[0]}</div>
+              <div style={{ width: 40, height: 40, borderRadius: 10, background: (proj?.color || C.green) + "20", display: "flex", alignItems: "center", justifyContent: "center", color: proj?.color || C.green, fontWeight: 800, fontSize: 16, flexShrink: 0 }}>{(c.name || "?")[0].toUpperCase()}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 600, fontSize: 15, color: C.text }}>{c.name}</div>
                 <div style={{ fontSize: 12, color: C.textLight, display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -927,19 +1096,63 @@ const CRM = ({ contacts, setContacts, user }) => {
       </Modal>
 
       {/* Deal detail modal */}
-      <Modal open={!!detail} onClose={() => { setDetail(null); setOutreachNote(""); setAddingPerson(false); setEngLetterFile(null); }} title={detail?.name || ""} wide>
+      <Modal open={!!detail} onClose={() => { setDetail(null); setOutreachNote(""); setAddingPerson(false); setEngLetterFile(null); setEditDealMode(false); }} title={detail?.name || ""} wide>
         {detail && (() => {
           const proj = PROJECTS.find(p => p.id === detail.project);
           return (
             <>
-              <div style={{ marginBottom: 16 }}>
-                {detail.company && <div style={{ fontSize: 13, color: C.textMid, marginBottom: 6 }}>{detail.company}</div>}
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                  {proj && <Badge color={proj.color} label={proj.name} />}
-                  {detail.amount && <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 20, fontWeight: 700, color: C.green }}>{detail.currency || "USD"} {Number(detail.amount).toLocaleString()}</span>}
-                  {detail.is_referral && <Badge color={C.gold} label={`↩ ${detail.referrer_name || "Referral"} · ${detail.referrer_commission || "TBD"}`} />}
+              {!editDealMode ? (
+                <>
+                  <div style={{ marginBottom: 16 }}>
+                    {detail.company && <div style={{ fontSize: 13, color: C.textMid, marginBottom: 6 }}>{detail.company}</div>}
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                      {proj && <Badge color={proj.color} label={proj.name} />}
+                      {detail.amount && <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 20, fontWeight: 700, color: C.green }}>{detail.currency || "USD"} {Number(detail.amount).toLocaleString()}</span>}
+                      {detail.is_referral && <Badge color={C.gold} label={`↩ ${detail.referrer_name || "Referral"} · ${detail.referrer_commission || "TBD"}`} />}
+                    </div>
+                  </div>
+                  <button onClick={() => {
+                    setEditDealForm({
+                      name: detail.name || "", company: detail.company || "", project: detail.project || "other",
+                      amount: detail.amount || "", currency: detail.currency || "USD", notes: detail.notes || "",
+                      is_referral: !!detail.is_referral, referrer_name: detail.referrer_name || "", referrer_commission: detail.referrer_commission || "",
+                    });
+                    setEditDealMode(true);
+                  }} style={{ ...btnSecondary, marginBottom: 20, marginTop: 0 }}>
+                    ✏️ Edit Deal
+                  </button>
+                </>
+              ) : (
+                <div style={{ marginBottom: 20, background: C.creamDark, borderRadius: 12, padding: 16 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>Edit Deal</div>
+                  <input style={{ ...inputStyle, marginBottom: 8 }} placeholder="Company / Organization *" value={editDealForm.name} onChange={e => setEditDealForm(f => ({ ...f, name: e.target.value }))} />
+                  <input style={{ ...inputStyle, marginBottom: 8 }} placeholder="Industry / description" value={editDealForm.company} onChange={e => setEditDealForm(f => ({ ...f, company: e.target.value }))} />
+                  <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: 8, marginBottom: 8 }}>
+                    <select style={selectStyle} value={editDealForm.currency} onChange={e => setEditDealForm(f => ({ ...f, currency: e.target.value }))}>
+                      {["USD","EUR","GBP","BRL","PYG","ARS"].map(c => <option key={c}>{c}</option>)}
+                    </select>
+                    <input style={inputStyle} type="number" placeholder="Amount *" value={editDealForm.amount} onChange={e => setEditDealForm(f => ({ ...f, amount: e.target.value }))} />
+                  </div>
+                  <select style={{ ...selectStyle, marginBottom: 8 }} value={editDealForm.project} onChange={e => setEditDealForm(f => ({ ...f, project: e.target.value }))}>
+                    {PROJECTS.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, padding: "8px 12px", background: C.white, borderRadius: 10 }}>
+                    <input type="checkbox" id="edit_is_ref" checked={editDealForm.is_referral} onChange={e => setEditDealForm(f => ({ ...f, is_referral: e.target.checked }))} style={{ width: 16, height: 16, cursor: "pointer" }} />
+                    <label htmlFor="edit_is_ref" style={{ fontSize: 14, color: C.text, cursor: "pointer", fontWeight: 500 }}>This is a referral</label>
+                  </div>
+                  {editDealForm.is_referral && (
+                    <div style={{ background: C.gold + "12", border: `1px solid ${C.gold}44`, borderRadius: 10, padding: 10, marginBottom: 8 }}>
+                      <input style={{ ...inputStyle, marginBottom: 6 }} placeholder="Referrer name" value={editDealForm.referrer_name} onChange={e => setEditDealForm(f => ({ ...f, referrer_name: e.target.value }))} />
+                      <input style={inputStyle} placeholder="Commission (e.g. 10% or USD 500)" value={editDealForm.referrer_commission} onChange={e => setEditDealForm(f => ({ ...f, referrer_commission: e.target.value }))} />
+                    </div>
+                  )}
+                  <textarea style={{ ...inputStyle, minHeight: 60, resize: "vertical", marginBottom: 12 }} placeholder="Notes" value={editDealForm.notes} onChange={e => setEditDealForm(f => ({ ...f, notes: e.target.value }))} />
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button style={{ ...btnPrimary, marginTop: 0, flex: 1 }} onClick={saveEditDeal}>Save Changes</button>
+                    <button style={{ ...btnSecondary, marginTop: 0, flex: 0.5 }} onClick={() => setEditDealMode(false)}>Cancel</button>
+                  </div>
                 </div>
-              </div>
+              )}
 
               <div style={{ marginBottom: 20 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Status</div>
@@ -1095,28 +1308,59 @@ const Billing = ({ contacts, user }) => {
   const [form, setForm] = useState({ contact_id: "", title: "", amount: "", currency: "USD", due_date: "", notes: "", status: "Draft" });
   const [filter, setFilter] = useState("all");
 
-  useEffect(() => {
-    supabase.from("invoices").select("*").eq("user_id", user.id).order("created_at", { ascending: false }).then(({ data }) => setInvoices(data || []));
-  }, [user.id]);
+  const loadInvoices = async () => {
+    const token = await getValidToken();
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/invoices?select=*&order=created_at.desc`, {
+      headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}` },
+    });
+    const data = await res.json();
+    if (Array.isArray(data)) setInvoices(data);
+  };
+
+  useEffect(() => { loadInvoices(); }, [user.id]);
 
   const addInvoice = async () => {
     if (!form.title.trim()) { alert("Please enter an invoice title."); return; }
     if (!form.amount) { alert("Invoice amount is required."); return; }
     if (!form.due_date) { alert("Due date is required."); return; }
-    const row = { ...form, user_id: user.id, created_at: new Date().toISOString() };
-    const { data } = await supabase.from("invoices").insert(row);
-    if (!Array.isArray(data) || !data[0]) { alert("Error saving invoice."); return; }
-    setInvoices(prev => [data[0], ...prev]);
+    const row = {
+      contact_id: form.contact_id || null,
+      title: form.title,
+      amount: form.amount ? Number(form.amount) : null,
+      currency: form.currency,
+      due_date: form.due_date,
+      notes: form.notes || null,
+      status: form.status,
+      user_id: user.id,
+      created_at: new Date().toISOString(),
+    };
+    const token = await getValidToken();
+    const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/invoices`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}`, "Prefer": "return=minimal" },
+      body: JSON.stringify(row),
+    });
+    if (!insertRes.ok) { const err = await insertRes.text(); alert("Error saving invoice:\n" + err); return; }
+    await loadInvoices();
     setModal(false); setForm({ contact_id: "", title: "", amount: "", currency: "USD", due_date: "", notes: "", status: "Draft" });
   };
 
   const updateInvoiceStatus = async (id, status) => {
-    await supabase.from("invoices").update({ status }).eq("id", id);
+    const token = await getValidToken();
+    await fetch(`${SUPABASE_URL}/rest/v1/invoices?id=eq.${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}`, "Prefer": "return=minimal" },
+      body: JSON.stringify({ status }),
+    });
     setInvoices(prev => prev.map(inv => inv.id === id ? { ...inv, status } : inv));
   };
 
   const deleteInvoice = async (id) => {
-    await supabase.from("invoices").delete().eq("id", id);
+    const token = await getValidToken();
+    await fetch(`${SUPABASE_URL}/rest/v1/invoices?id=eq.${id}`, {
+      method: "DELETE",
+      headers: { "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}` },
+    });
     setInvoices(prev => prev.filter(inv => inv.id !== id));
   };
 
@@ -1225,9 +1469,17 @@ const Billing = ({ contacts, user }) => {
 
 // ADMIN VIEW — sees all users' tasks + contacts
 // ═════════════════════════════════════════════════════════════════════════════
-const AdminView = ({ allTasks, allContacts, allUsers }) => {
+const AdminView = ({ allTasks, allContacts, allUsers, setAllTasks, setAllContacts }) => {
   const [viewTab, setViewTab] = useState("tasks");
   const [userFilter, setUserFilter] = useState("all");
+  const [viewingTask, setViewingTask] = useState(null);
+  const [viewingContact, setViewingContact] = useState(null);
+  const [editingTask, setEditingTask] = useState(null);
+  const [editingContact, setEditingContact] = useState(null);
+  const [taskEditForm, setTaskEditForm] = useState({});
+  const [contactEditForm, setContactEditForm] = useState({});
+  const [adminTaskEditMode, setAdminTaskEditMode] = useState(false);
+  const [adminContactEditMode, setAdminContactEditMode] = useState(false);
 
   const getName = (uid) => {
     const u = allUsers.find(x => x.user_id === uid);
@@ -1238,6 +1490,87 @@ const AdminView = ({ allTasks, allContacts, allUsers }) => {
 
   const filteredTasks = userFilter === "all" ? allTasks : allTasks.filter(t => t.user_id === userFilter);
   const filteredContacts = userFilter === "all" ? allContacts : allContacts.filter(c => c.user_id === userFilter);
+
+  const openTaskView = (t) => {
+    setTaskEditForm({
+      title: t.title, project: t.project, priority: t.priority, notes: t.notes || "",
+      deadline: t.deadline ? t.deadline.slice(0, 16) : "",
+    });
+    setAdminTaskEditMode(false);
+    setEditingTask(t);
+  };
+
+  const saveTaskEdit = async () => {
+    if (!taskEditForm.title.trim()) { alert("Title is required."); return; }
+    const updates = {
+      title: taskEditForm.title, project: taskEditForm.project, priority: taskEditForm.priority,
+      notes: taskEditForm.notes || null, deadline: taskEditForm.deadline || null,
+    };
+    const token = await getValidToken();
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/tasks?id=eq.${editingTask.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}`, "Prefer": "return=minimal" },
+      body: JSON.stringify(updates),
+    });
+    if (!res.ok) { const err = await res.text(); alert("Error:\n" + err); return; }
+    setAllTasks(prev => prev.map(t => t.id === editingTask.id ? { ...t, ...updates } : t));
+    setEditingTask(prev => ({ ...prev, ...updates }));
+    setAdminTaskEditMode(false);
+  };
+
+  const deleteTaskAdmin = async (id) => {
+    if (!confirm("Delete this task?")) return;
+    const token = await getValidToken();
+    await fetch(`${SUPABASE_URL}/rest/v1/tasks?id=eq.${id}`, {
+      method: "DELETE",
+      headers: { "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}` },
+    });
+    setAllTasks(prev => prev.filter(t => t.id !== id));
+    setEditingTask(null);
+  };
+
+  const openContactView = (c) => {
+    setContactEditForm({
+      name: c.name || "", company: c.company || "", project: c.project || "other", status: c.status || "New",
+      amount: c.amount || "", currency: c.currency || "USD", notes: c.notes || "",
+      is_referral: !!c.is_referral, referrer_name: c.referrer_name || "", referrer_commission: c.referrer_commission || "",
+    });
+    setAdminContactEditMode(false);
+    setEditingContact(c);
+  };
+
+  const saveContactEdit = async () => {
+    if (!contactEditForm.name.trim()) { alert("Name is required."); return; }
+    const updates = {
+      name: contactEditForm.name, company: contactEditForm.company || null, project: contactEditForm.project,
+      status: contactEditForm.status,
+      amount: contactEditForm.amount ? Number(contactEditForm.amount) : null,
+      currency: contactEditForm.currency, notes: contactEditForm.notes || null,
+      is_referral: !!contactEditForm.is_referral, referrer_name: contactEditForm.referrer_name || null,
+      referrer_commission: contactEditForm.referrer_commission || null,
+    };
+    const token = await getValidToken();
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/contacts?id=eq.${editingContact.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}`, "Prefer": "return=minimal" },
+      body: JSON.stringify(updates),
+    });
+    if (!res.ok) { const err = await res.text(); alert("Error:\n" + err); return; }
+    setAllContacts(prev => prev.map(c => c.id === editingContact.id ? { ...c, ...updates } : c));
+    setEditingContact(prev => ({ ...prev, ...updates }));
+    setAdminContactEditMode(false);
+  };
+
+  const deleteContactAdmin = async (id) => {
+    if (!confirm("Delete this deal?")) return;
+    const token = await getValidToken();
+    await fetch(`${SUPABASE_URL}/rest/v1/contacts?id=eq.${id}`, {
+      method: "DELETE",
+      headers: { "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}` },
+    });
+    setAllContacts(prev => prev.filter(c => c.id !== id));
+    setEditingContact(null);
+  };
 
   return (
     <div>
@@ -1290,7 +1623,7 @@ const AdminView = ({ allTasks, allContacts, allUsers }) => {
           {filteredTasks.map(t => {
             const proj = PROJECTS.find(p => p.id === t.project);
             return (
-              <div key={t.id} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "14px 16px", marginBottom: 10, opacity: t.done ? 0.5 : 1 }}>
+              <div key={t.id} onClick={() => openTaskView(t)} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "14px 16px", marginBottom: 10, opacity: t.done ? 0.5 : 1, cursor: "pointer" }}>
                 <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
                   <div style={{ width: 22, height: 22, borderRadius: 6, flexShrink: 0, border: `2px solid ${proj?.color || C.green}`, background: t.done ? (proj?.color || C.green) : "transparent", display: "flex", alignItems: "center", justifyContent: "center", marginTop: 2 }}>
                     {t.done && <Icon name="check" size={12} color={C.white} />}
@@ -1301,6 +1634,7 @@ const AdminView = ({ allTasks, allContacts, allUsers }) => {
                     <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap", alignItems: "center" }}>
                       {proj && <Badge color={proj.color} label={proj.name.split(" ")[0]} />}
                       {t.priority === "high" && <Badge color={C.red} label="High" />}
+                      <DeadlineBadge deadline={t.deadline} done={t.done} />
                       <span style={{ fontSize: 11, color: C.textLight, background: C.creamDark, borderRadius: 4, padding: "2px 7px" }}>👤 {getName(t.user_id)}</span>
                     </div>
                   </div>
@@ -1318,12 +1652,15 @@ const AdminView = ({ allTasks, allContacts, allUsers }) => {
           {filteredContacts.map(c => {
             const proj = PROJECTS.find(p => p.id === c.project);
             return (
-              <div key={c.id} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "14px 16px", marginBottom: 10 }}>
+              <div key={c.id} onClick={() => openContactView(c)} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "14px 16px", marginBottom: 10, cursor: "pointer" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <div style={{ width: 40, height: 40, borderRadius: 10, background: (proj?.color || C.green) + "20", display: "flex", alignItems: "center", justifyContent: "center", color: proj?.color || C.green, fontWeight: 800, fontSize: 16, flexShrink: 0 }}>{c.name[0]}</div>
+                  <div style={{ width: 40, height: 40, borderRadius: 10, background: (proj?.color || C.green) + "20", display: "flex", alignItems: "center", justifyContent: "center", color: proj?.color || C.green, fontWeight: 800, fontSize: 16, flexShrink: 0 }}>{(c.name || "?")[0].toUpperCase()}</div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: 15, color: C.text }}>{c.name}</div>
-                    <div style={{ fontSize: 12, color: C.textLight }}>{c.company}</div>
+                    <div style={{ fontSize: 12, color: C.textLight, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {c.company && <span>{c.company}</span>}
+                      {c.amount && <span style={{ color: C.green, fontWeight: 700 }}>{c.currency || "USD"} {Number(c.amount).toLocaleString()}</span>}
+                    </div>
                     <div style={{ display: "flex", gap: 6, marginTop: 4, flexWrap: "wrap", alignItems: "center" }}>
                       <Badge color={STATUS_COLORS[c.status] || C.textLight} label={c.status} />
                       {proj && <Badge color={proj.color} label={proj.name.split(" ")[0]} />}
@@ -1336,6 +1673,134 @@ const AdminView = ({ allTasks, allContacts, allUsers }) => {
           })}
         </div>
       )}
+
+      {/* Task View/Edit Modal */}
+      <Modal open={!!editingTask} onClose={() => { setEditingTask(null); setAdminTaskEditMode(false); }} title={editingTask?.title || ""} wide>
+        {editingTask && (() => {
+          const proj = PROJECTS.find(p => p.id === editingTask.project);
+          return !adminTaskEditMode ? (
+            <>
+              <div style={{ fontSize: 12, color: C.textLight, marginBottom: 12 }}>Owner: {getName(editingTask.user_id)}</div>
+              <div style={{ marginBottom: 16 }}>
+                {proj && <Badge color={proj.color} label={proj.name} />}
+                {editingTask.priority === "high" && <span style={{ marginLeft: 6 }}><Badge color={C.red} label="High Priority" /></span>}
+                {editingTask.deadline && <div style={{ marginTop: 8 }}><DeadlineBadge deadline={editingTask.deadline} done={editingTask.done} /></div>}
+                {editingTask.notes && <div style={{ fontSize: 13, color: C.textMid, marginTop: 10, background: C.creamDark, borderRadius: 10, padding: "10px 14px" }}>{editingTask.notes}</div>}
+                {(editingTask.task_notes || []).length > 0 && (
+                  <div style={{ marginTop: 16 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Notes ({(editingTask.task_notes || []).length})</div>
+                    {(editingTask.task_notes || []).map((n, i) => (
+                      <div key={i} style={{ borderLeft: `3px solid ${C.greenLight}`, paddingLeft: 12, marginBottom: 10 }}>
+                        <div style={{ fontSize: 11, color: C.textLight, marginBottom: 2 }}>{new Date(n.date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" })}</div>
+                        <div style={{ fontSize: 13, color: C.text, whiteSpace: "pre-wrap" }}>{n.text}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <button style={btnPrimary} onClick={() => setAdminTaskEditMode(true)}>✏️ Edit Task</button>
+              <button style={{ ...btnSecondary, color: C.red, borderColor: C.red, marginTop: 8 }} onClick={() => deleteTaskAdmin(editingTask.id)}>Delete Task</button>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 12, color: C.textLight, marginBottom: 12 }}>Editing task owned by {getName(editingTask.user_id)}</div>
+              <input style={{ ...inputStyle, marginBottom: 10 }} placeholder="Title" value={taskEditForm.title} onChange={e => setTaskEditForm(f => ({ ...f, title: e.target.value }))} />
+              <input type="datetime-local" style={{ ...inputStyle, marginBottom: 10 }} value={taskEditForm.deadline} onChange={e => setTaskEditForm(f => ({ ...f, deadline: e.target.value }))} />
+              <select style={{ ...selectStyle, marginBottom: 10 }} value={taskEditForm.project} onChange={e => setTaskEditForm(f => ({ ...f, project: e.target.value }))}>
+                {PROJECTS.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+              <select style={{ ...selectStyle, marginBottom: 10 }} value={taskEditForm.priority} onChange={e => setTaskEditForm(f => ({ ...f, priority: e.target.value }))}>
+                <option value="normal">Normal priority</option>
+                <option value="high">High priority</option>
+              </select>
+              <textarea style={{ ...inputStyle, minHeight: 70, resize: "vertical", marginBottom: 12 }} placeholder="Notes" value={taskEditForm.notes} onChange={e => setTaskEditForm(f => ({ ...f, notes: e.target.value }))} />
+              <div style={{ display: "flex", gap: 8 }}>
+                <button style={{ ...btnPrimary, marginTop: 0, flex: 1 }} onClick={saveTaskEdit}>Save Changes</button>
+                <button style={{ ...btnSecondary, marginTop: 0, flex: 0.5 }} onClick={() => setAdminTaskEditMode(false)}>Cancel</button>
+              </div>
+            </>
+          );
+        })()}
+      </Modal>
+
+      {/* Contact View/Edit Modal */}
+      <Modal open={!!editingContact} onClose={() => { setEditingContact(null); setAdminContactEditMode(false); }} title={editingContact?.name || ""} wide>
+        {editingContact && (() => {
+          const proj = PROJECTS.find(p => p.id === editingContact.project);
+          return !adminContactEditMode ? (
+            <>
+              <div style={{ fontSize: 12, color: C.textLight, marginBottom: 12 }}>Owner: {getName(editingContact.user_id)}</div>
+              <div style={{ marginBottom: 16 }}>
+                {editingContact.company && <div style={{ fontSize: 13, color: C.textMid, marginBottom: 6 }}>{editingContact.company}</div>}
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                  {proj && <Badge color={proj.color} label={proj.name} />}
+                  {editingContact.amount && <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 20, fontWeight: 700, color: C.green }}>{editingContact.currency || "USD"} {Number(editingContact.amount).toLocaleString()}</span>}
+                  <Badge color={STATUS_COLORS[editingContact.status] || C.textLight} label={editingContact.status} />
+                  {editingContact.is_referral && <Badge color={C.gold} label={`↩ ${editingContact.referrer_name || "Referral"} · ${editingContact.referrer_commission || "TBD"}`} />}
+                </div>
+                {editingContact.notes && <div style={{ fontSize: 13, color: C.textMid, marginTop: 10, background: C.creamDark, borderRadius: 10, padding: "10px 14px" }}>{editingContact.notes}</div>}
+                {(editingContact.people || []).length > 0 && (
+                  <div style={{ marginTop: 16 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Contacts at {editingContact.name}</div>
+                    {(editingContact.people || []).map((p, i) => (
+                      <div key={i} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 10, padding: "8px 12px", marginBottom: 6, fontSize: 13 }}>
+                        <div style={{ fontWeight: 600 }}>{p.name}{p.role && <span style={{ fontWeight: 400, color: C.textLight }}> · {p.role}</span>}</div>
+                        {p.email && <div style={{ fontSize: 12, color: C.green }}>{p.email}</div>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {(editingContact.contact_notes || []).length > 0 && (
+                  <div style={{ marginTop: 16 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>Notes ({(editingContact.contact_notes || []).length})</div>
+                    {(editingContact.contact_notes || []).map((n, i) => (
+                      <div key={i} style={{ borderLeft: `3px solid ${C.greenLight}`, paddingLeft: 12, marginBottom: 10 }}>
+                        <div style={{ fontSize: 11, color: C.textLight, marginBottom: 2 }}>{new Date(n.date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" })}</div>
+                        <div style={{ fontSize: 13, color: C.text, whiteSpace: "pre-wrap" }}>{n.text}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <button style={btnPrimary} onClick={() => setAdminContactEditMode(true)}>✏️ Edit Deal</button>
+              <button style={{ ...btnSecondary, color: C.red, borderColor: C.red, marginTop: 8 }} onClick={() => deleteContactAdmin(editingContact.id)}>Delete Deal</button>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 12, color: C.textLight, marginBottom: 12 }}>Editing deal owned by {getName(editingContact.user_id)}</div>
+              <input style={{ ...inputStyle, marginBottom: 10 }} placeholder="Company / Organization" value={contactEditForm.name} onChange={e => setContactEditForm(f => ({ ...f, name: e.target.value }))} />
+              <input style={{ ...inputStyle, marginBottom: 10 }} placeholder="Industry / description" value={contactEditForm.company} onChange={e => setContactEditForm(f => ({ ...f, company: e.target.value }))} />
+              <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: 8, marginBottom: 10 }}>
+                <select style={selectStyle} value={contactEditForm.currency} onChange={e => setContactEditForm(f => ({ ...f, currency: e.target.value }))}>
+                  {["USD","EUR","GBP","BRL","PYG","ARS"].map(c => <option key={c}>{c}</option>)}
+                </select>
+                <input style={inputStyle} type="number" placeholder="Amount" value={contactEditForm.amount} onChange={e => setContactEditForm(f => ({ ...f, amount: e.target.value }))} />
+              </div>
+              <select style={{ ...selectStyle, marginBottom: 10 }} value={contactEditForm.project} onChange={e => setContactEditForm(f => ({ ...f, project: e.target.value }))}>
+                {PROJECTS.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+              <select style={{ ...selectStyle, marginBottom: 10 }} value={contactEditForm.status} onChange={e => setContactEditForm(f => ({ ...f, status: e.target.value }))}>
+                {STATUSES.map(s => <option key={s}>{s}</option>)}
+              </select>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, padding: "8px 12px", background: C.creamDark, borderRadius: 10 }}>
+                <input type="checkbox" id="adm_is_ref" checked={contactEditForm.is_referral} onChange={e => setContactEditForm(f => ({ ...f, is_referral: e.target.checked }))} style={{ width: 16, height: 16, cursor: "pointer" }} />
+                <label htmlFor="adm_is_ref" style={{ fontSize: 14, color: C.text, cursor: "pointer", fontWeight: 500 }}>This is a referral</label>
+              </div>
+              {contactEditForm.is_referral && (
+                <div style={{ background: C.gold + "12", border: `1px solid ${C.gold}44`, borderRadius: 10, padding: 10, marginBottom: 10 }}>
+                  <input style={{ ...inputStyle, marginBottom: 6 }} placeholder="Referrer name" value={contactEditForm.referrer_name} onChange={e => setContactEditForm(f => ({ ...f, referrer_name: e.target.value }))} />
+                  <input style={inputStyle} placeholder="Commission" value={contactEditForm.referrer_commission} onChange={e => setContactEditForm(f => ({ ...f, referrer_commission: e.target.value }))} />
+                </div>
+              )}
+              <textarea style={{ ...inputStyle, minHeight: 70, resize: "vertical", marginBottom: 12 }} placeholder="Notes" value={contactEditForm.notes} onChange={e => setContactEditForm(f => ({ ...f, notes: e.target.value }))} />
+              <div style={{ display: "flex", gap: 8 }}>
+                <button style={{ ...btnPrimary, marginTop: 0, flex: 1 }} onClick={saveContactEdit}>Save Changes</button>
+                <button style={{ ...btnSecondary, marginTop: 0, flex: 0.5 }} onClick={() => setAdminContactEditMode(false)}>Cancel</button>
+              </div>
+            </>
+          );
+        })()}
+      </Modal>
     </div>
   );
 };
@@ -1405,9 +1870,15 @@ export default function Teki() {
     supabase.from("admins").select("*").eq("user_id", uid).then(({ data }) => {
       if (data && data.length > 0) {
         setIsAdmin(true);
-        supabase.from("tasks").select("*").order("created_at", { ascending: false }).then(({ data: d }) => setAllTasks(d || []));
-        supabase.from("contacts").select("*").order("created_at", { ascending: false }).then(({ data: d }) => setAllContacts(d || []));
-        supabase.from("user_profiles").select("*").order("created_at", { ascending: true }).then(({ data: d }) => setAllUsers(d || []));
+        // Use direct fetch with token for admin queries to bypass any client caching
+        const token = (() => { try { return JSON.parse(localStorage.getItem("teki_session"))?.access_token || SUPABASE_ANON; } catch { return SUPABASE_ANON; } })();
+        const adminHeaders = { "Content-Type": "application/json", "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}` };
+        fetch(`${SUPABASE_URL}/rest/v1/tasks?select=*&order=created_at.desc`, { headers: adminHeaders })
+          .then(r => r.json()).then(d => setAllTasks(Array.isArray(d) ? d : []));
+        fetch(`${SUPABASE_URL}/rest/v1/contacts?select=*&order=created_at.desc`, { headers: adminHeaders })
+          .then(r => r.json()).then(d => setAllContacts(Array.isArray(d) ? d : []));
+        fetch(`${SUPABASE_URL}/rest/v1/user_profiles?select=*`, { headers: adminHeaders })
+          .then(r => r.json()).then(d => setAllUsers(Array.isArray(d) ? d : []));
       }
     });
   }, [user]);
@@ -1457,7 +1928,7 @@ export default function Teki() {
       {tab === "pipeline" && <CRM contacts={contacts} setContacts={setContacts} user={normalizedUser} />}
       {tab === "projects" && <ProjectsView tasks={tasks} contacts={contacts} />}
       {tab === "billing"  && (isAdmin || isBilling) && <Billing contacts={contacts} user={normalizedUser} />}
-      {tab === "admin"    && isAdmin && <AdminView allTasks={allTasks} allContacts={allContacts} allUsers={allUsers} />}
+      {tab === "admin"    && isAdmin && <AdminView allTasks={allTasks} allContacts={allContacts} allUsers={allUsers} setAllTasks={setAllTasks} setAllContacts={setAllContacts} />}
     </>
   );
 
