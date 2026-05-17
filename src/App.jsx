@@ -1965,30 +1965,51 @@ const Calendar = ({ user }) => {
     return { top, height: Math.max(8, bottom - top) };
   };
 
-  // Lay out busy blocks for a single day with side-by-side overlap handling
+  // Lay out busy blocks for a single day with side-by-side overlap handling.
+  // Algorithm: group overlapping items into "clusters", then assign columns within each cluster.
   const layoutDay = (day) => {
-    const itemsForDay = allBusy
-      .map(b => ({ busy: b, pos: windowPosition(b, day) }))
-      .filter(x => x.pos !== null)
-      .sort((a, b) => a.pos.top - b.pos.top);
+    const items = allBusy
+      .map((b, idx) => {
+        const p = windowPosition(b, day);
+        if (!p) return null;
+        return { id: idx, busy: b, top: p.top, height: p.height, bottom: p.top + p.height };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.top - b.top || a.bottom - b.bottom);
 
-    // Group overlapping items into columns (greedy)
-    const placed = [];
-    for (const item of itemsForDay) {
-      const itemBottom = item.pos.top + item.pos.height;
-      // Find a column where this item doesn't overlap with the last one
-      let col = 0;
-      while (true) {
-        const conflicts = placed.some(p => p.col === col && !(p.bottom <= item.pos.top || p.top >= itemBottom));
-        if (!conflicts) break;
-        col++;
+    if (items.length === 0) return [];
+
+    // Build clusters: groups of items that transitively overlap
+    const clusters = [];
+    for (const item of items) {
+      // Find an existing cluster this item overlaps with
+      const cluster = clusters.find(cl => cl.maxBottom > item.top);
+      if (cluster) {
+        cluster.items.push(item);
+        cluster.maxBottom = Math.max(cluster.maxBottom, item.bottom);
+      } else {
+        clusters.push({ items: [item], maxBottom: item.bottom });
       }
-      placed.push({ ...item, col, top: item.pos.top, bottom: itemBottom });
     }
 
-    // Determine total cols needed for this day
-    const totalCols = placed.reduce((m, p) => Math.max(m, p.col + 1), 1);
-    return placed.map(p => ({ ...p, totalCols }));
+    // Within each cluster, assign each item to the lowest-numbered column where it fits
+    const result = [];
+    for (const cluster of clusters) {
+      const columns = []; // columns[i] = bottom of the last item placed in column i
+      for (const item of cluster.items) {
+        let col = 0;
+        while (col < columns.length && columns[col] > item.top) col++;
+        if (col === columns.length) columns.push(item.bottom);
+        else columns[col] = item.bottom;
+        item.col = col;
+      }
+      const totalCols = columns.length;
+      for (const item of cluster.items) {
+        result.push({ ...item, totalCols });
+      }
+    }
+
+    return result;
   };
 
   const allBusy = gridData?.users?.flatMap(u => u.busy.map(b => ({ ...b, user_id: u.user_id }))) || [];
