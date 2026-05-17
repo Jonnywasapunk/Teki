@@ -23,3 +23,12 @@ dist-ssr
 *.sln
 *.sw?
 .vercel
+
+# OAuth credentials — never commit
+client_secret*.json
+*.pem
+*.key
+.env
+.env.local
+.env.*.local
+src/App.jsx.backup-*
