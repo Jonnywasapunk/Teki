@@ -1891,6 +1891,17 @@ const Calendar = ({ user }) => {
     } catch (e) { setToast({ type: "error", message: e.message || "Network error" }); setConnecting(false); }
   };
 
+  const connectMicrosoft = async () => {
+    setConnecting(true);
+    try {
+      const token = await getValidToken();
+      const r = await fetch("/api/calendar/connect/microsoft", { headers: { "Authorization": `Bearer ${token}` } });
+      const data = await r.json();
+      if (data.url) window.location.href = data.url;
+      else { setToast({ type: "error", message: data.error || "Failed to start Microsoft OAuth" }); setConnecting(false); }
+    } catch (e) { setToast({ type: "error", message: e.message || "Network error" }); setConnecting(false); }
+  };
+
   // Server-side hard-gated delete: backend checks email
   const disconnectAccount = async (connectionId) => {
     if (!isOwner) {
@@ -1986,10 +1997,10 @@ const Calendar = ({ user }) => {
             padding: "10px 16px", background: C.green, color: C.cream, border: "none",
             borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: "pointer",
           }}>Add iCal Feed</button>
-          <button disabled style={{
-            padding: "10px 16px", background: C.cream, color: C.textLight,
-            border: `1px solid ${C.border}`, borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: "not-allowed",
-          }}>Microsoft (coming soon)</button>
+          <button onClick={connectMicrosoft} disabled={connecting} style={{
+            padding: "10px 16px", background: "#00A4EF", color: "#fff", border: "none",
+            borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: connecting ? "not-allowed" : "pointer", opacity: connecting ? 0.6 : 1,
+          }}>{connecting ? "Connecting..." : "Connect Microsoft"}</button>
         </div>
       </div>
 
