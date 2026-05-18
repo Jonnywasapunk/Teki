@@ -2033,10 +2033,11 @@ const Calendar = ({ user }) => {
 
     if (items.length === 0) return [];
 
-    // Dedup: same start AND end times = same meeting from different sources
+    // Dedup WITHIN a user only (same meeting from Google+Microsoft = one block).
+    // Different users at the same time stay as separate blocks (different colors).
     const seen = new Map();
     for (const it of items) {
-      const key = it.top + "_" + it.bottom;
+      const key = (it.busy.user_id || "?") + "_" + it.top + "_" + it.bottom;
       if (!seen.has(key)) seen.set(key, it);
     }
     items = Array.from(seen.values());
