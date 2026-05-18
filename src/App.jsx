@@ -2188,15 +2188,23 @@ const Calendar = ({ user }) => {
                       borderBottom: hIdx < HOURS.length - 1 ? `1px solid ${C.border}50` : "none",
                     }} />
                   ))}
-                  {allBusy.map((busy, bIdx) => {
-                    const pos = windowPosition(busy, day);
-                    if (!pos) return null;
+                  {layoutDay(day).map((item, bIdx) => {
+                    const widthPct = 100 / item.totalCols;
+                    const leftPct = widthPct * item.col;
+                    const allUids = gridData?.users?.map(u => u.user_id) || [];
+                    const bgColor = userColor(item.busy.user_id, allUids);
+                    const initials = userInitials(item.busy.user_id);
+                    const showLabel = item.totalCols === 1;
                     return (
-                      <div key={bIdx} title={`${busy.account_email}\n${new Date(busy.starts_at).toLocaleString()} – ${new Date(busy.ends_at).toLocaleString()}${busy.title ? `\n${busy.title}` : ""}`} style={{
-                        position: "absolute", top: pos.top, height: pos.height, left: 2, right: 2,
-                        background: C.green, color: C.cream, borderRadius: 4,
-                        fontSize: 9, padding: "2px 4px", overflow: "hidden", cursor: "pointer", opacity: 0.85,
-                      }}>{busy.title || "Busy"}</div>
+                      <div key={bIdx} title={`${userLabel(item.busy.user_id)} (${initials})\n${item.busy.account_email}\n${new Date(item.busy.starts_at).toLocaleString()} – ${new Date(item.busy.ends_at).toLocaleString()}${item.busy.title ? `\n${item.busy.title}` : ""}`} style={{
+                        position: "absolute", top: item.top, height: item.height,
+                        left: `calc(${leftPct}% + 2px)`, width: `calc(${widthPct}% - 4px)`,
+                        background: bgColor, color: C.cream, borderRadius: 4,
+                        fontSize: 10, padding: "3px 5px", overflow: "hidden", cursor: "pointer",
+                        boxShadow: "0 1px 2px rgba(0,0,0,0.1)",
+                        display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center",
+                        fontWeight: 600,
+                      }}>{showLabel ? (item.busy.title || "Busy") : initials}</div>
                     );
                   })}
                 </div>
