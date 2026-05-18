@@ -1817,6 +1817,38 @@ const Calendar = ({ user }) => {
   const [toast, setToast] = useState(null);
   const [showIcalModal, setShowIcalModal] = useState(false);
 
+  // User profiles map for color-coding the grid
+  const [userProfiles, setUserProfiles] = useState({});
+
+  // Color palette for users: Jonny first (red), Valeria second (green), then auto-cycle
+  const USER_COLORS = [C.red, C.green, "#0050B0", "#C8A55D", "#7D4DBA", "#D97706", "#0E7490"];
+  const JONNY_ID = "9f921254-9269-4bf1-888a-a2dd3ec03b31";
+  const VALE_ID = "9987a529-3d1a-4911-86cd-c03a7547991c";
+
+  // Stable color assignment: Jonny=red, Vale=green, others by sorted user_id order
+  const userColor = (uid, allUserIds) => {
+    if (uid === JONNY_ID) return USER_COLORS[0];
+    if (uid === VALE_ID) return USER_COLORS[1];
+    const others = (allUserIds || []).filter(id => id !== JONNY_ID && id !== VALE_ID).sort();
+    const idx = others.indexOf(uid);
+    return USER_COLORS[2 + (idx % (USER_COLORS.length - 2))] || C.textLight;
+  };
+
+  // Get initials from display_name; fallback to email prefix
+  const userInitials = (uid) => {
+    const p = userProfiles[uid];
+    const source = p?.display_name || p?.email || "?";
+    const parts = source.replace(/@.*$/, "").split(/[\s_.-]+/).filter(Boolean);
+    if (parts.length === 0) return "?";
+    if (parts.length === 1) return parts[0][0]?.toUpperCase() || "?";
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  };
+
+  const userLabel = (uid) => {
+    const p = userProfiles[uid];
+    return p?.display_name || p?.email || "Unknown";
+  };
+
   // Grid state
   const [gridLoading, setGridLoading] = useState(false);
   const [gridData, setGridData] = useState(null);
@@ -1879,6 +1911,28 @@ const Calendar = ({ user }) => {
   useEffect(() => { loadConnections(); }, [user?.id]);
   useEffect(() => { loadAvailability(); }, [weekStart]);
   useEffect(() => { if (connections.length > 0) loadAvailability(); }, [connections.length]);
+
+  // Load user profiles once we know which users have data in the grid
+  useEffect(() => {
+    if (!gridData?.users || gridData.users.length === 0) return;
+    const uids = gridData.users.map(u => u.user_id).filter(Boolean);
+    if (uids.length === 0) return;
+    (async () => {
+      try {
+        const token = await getValidToken();
+        const idsCsv = uids.map(id => `"${id}"`).join(",");
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/user_profiles?user_id=in.(${idsCsv})`, {
+          headers: { apikey: SUPABASE_ANON, Authorization: `Bearer ${token}` },
+        });
+        if (r.ok) {
+          const rows = await r.json();
+          const map = {};
+          (Array.isArray(rows) ? rows : []).forEach(row => { map[row.user_id] = row; });
+          setUserProfiles(map);
+        }
+      } catch (e) { console.error("Failed to load profiles:", e); }
+    })();
+  }, [gridData]);
 
   const connectGoogle = async () => {
     setConnecting(true);
@@ -2149,11 +2203,17 @@ const Calendar = ({ user }) => {
             </div>
           )}
 
-          <div style={{ marginTop: 12, fontSize: 12, color: C.textLight, display: "flex", gap: 16, alignItems: "center" }}>
-            <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ width: 12, height: 12, background: C.green, borderRadius: 2 }}></span> Busy
-            </span>
-            <span>Hover blocks for details · Times shown in your local timezone</span>
+          <div style={{ marginTop: 12, fontSize: 12, color: C.textLight, display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
+            {(gridData?.users || []).filter(u => u.busy.length > 0).map(u => {
+              const allUids = gridData.users.map(x => x.user_id);
+              return (
+                <span key={u.user_id} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ width: 12, height: 12, background: userColor(u.user_id, allUids), borderRadius: 2 }}></span>
+                  {userLabel(u.user_id)} ({userInitials(u.user_id)})
+                </span>
+              );
+            })}
+            <span style={{ marginLeft: "auto" }}>Hover blocks for details · Times shown in your local timezone</span>
           </div>
         </div>
       )}
