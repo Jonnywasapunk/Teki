@@ -1002,7 +1002,9 @@ const CRM = ({ contacts, setContacts, user }) => {
   };
 
   const filtered = filter === "all"
-    ? contacts.filter(c => c.status !== "Closed" && c.status !== "Not interested")
+    ? contacts.filter(c => c.status !== "Closed" && c.status !== "Not interested" && !c.is_closed_business)
+    : filter === "Business Closed"
+    ? contacts.filter(c => c.is_closed_business)
     : contacts.filter(c => c.status === filter);
 
   const ContactLink = ({ icon, value, href }) => {
@@ -1026,7 +1028,7 @@ const CRM = ({ contacts, setContacts, user }) => {
       </div>
 
       <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, marginBottom: 16 }}>
-        {["all", ...STATUSES].map(s => (
+        {["all", ...STATUSES, "Business Closed"].map(s => (
           <button key={s} onClick={() => setFilter(s)} style={{
             background: filter === s ? C.green : C.white, color: filter === s ? C.cream : C.textMid,
             border: `1.5px solid ${filter === s ? C.green : C.border}`,
@@ -1043,7 +1045,7 @@ const CRM = ({ contacts, setContacts, user }) => {
         const amt = fmtAmount(c);
         return (
           <div key={c.id} onClick={() => { setDetail(c); setOutreachNote(""); setAddingPerson(false); setPersonForm(BLANK_PERSON); setEngLetterFile(null); }}
-            style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "14px 16px", marginBottom: 10, cursor: "pointer" }}>
+            style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "14px 16px", marginBottom: 10, cursor: "pointer", opacity: c.is_closed_business ? 0.6 : 1 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <div style={{ width: 40, height: 40, borderRadius: 10, background: (proj?.color || C.green) + "20", display: "flex", alignItems: "center", justifyContent: "center", color: proj?.color || C.green, fontWeight: 800, fontSize: 16, flexShrink: 0 }}>{(c.name || "?")[0].toUpperCase()}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -1056,7 +1058,9 @@ const CRM = ({ contacts, setContacts, user }) => {
                 </div>
               </div>
               <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
-                <Badge color={STATUS_COLORS[c.status] || C.textLight} label={c.status} />
+                {c.is_closed_business
+                  ? <Badge color={C.red} label="🚫 Closed" />
+                  : <Badge color={STATUS_COLORS[c.status] || C.textLight} label={c.status} />}
                 {proj && <span style={{ fontSize: 10, color: C.textLight }}>{proj.name.split(" ")[0]}</span>}
               </div>
             </div>
@@ -1110,8 +1114,19 @@ const CRM = ({ contacts, setContacts, user }) => {
                       {proj && <Badge color={proj.color} label={proj.name} />}
                       {detail.amount && <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 20, fontWeight: 700, color: C.green }}>{detail.currency || "USD"} {Number(detail.amount).toLocaleString()}</span>}
                       {detail.is_referral && <Badge color={C.gold} label={`↩ ${detail.referrer_name || "Referral"} · ${detail.referrer_commission || "TBD"}`} />}
+                      {detail.is_closed_business && <Badge color={C.red} label="🚫 Permanently Closed" />}
                     </div>
                   </div>
+                  <button
+                    onClick={() => updateField("is_closed_business", !detail.is_closed_business)}
+                    style={{
+                      ...btnSecondary, marginBottom: 10, marginTop: 0,
+                      borderColor: detail.is_closed_business ? C.green : C.red,
+                      color: detail.is_closed_business ? C.green : C.red,
+                    }}
+                  >
+                    {detail.is_closed_business ? "✅ Mark as Open Again" : "🚫 Mark Business Permanently Closed"}
+                  </button>
                   <button onClick={() => {
                     setEditDealForm({
                       name: detail.name || "", company: detail.company || "", project: detail.project || "other",
