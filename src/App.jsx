@@ -84,6 +84,27 @@ const supabase = (() => {
     },
     signOut: async () => { _saveSession(null); return { error: null }; },
     getSession: () => ({ data: { session: _session } }),
+    // Send a password-recovery email. Supabase emails a link back to redirectTo
+    // with #type=recovery&access_token=... in the URL hash.
+    resetPasswordForEmail: async (email, { redirectTo } = {}) => {
+      const r = await fetch(`${SUPABASE_URL}/auth/v1/recover`, {
+        method: "POST", headers: headers(),
+        body: JSON.stringify({ email, ...(redirectTo ? { gotrue_meta_security: {}, redirect_to: redirectTo } : {}) }),
+      });
+      // recover returns {} on success (200) to avoid leaking whether an email exists
+      let data = {};
+      try { data = await r.json(); } catch {}
+      return { data, error: r.ok ? null : (data.error_description || data.msg || data.error || "Could not send reset email") };
+    },
+    // Set a new password using a recovery access token (from the email link).
+    updateUserPassword: async (password, accessToken) => {
+      const r = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+        method: "PUT", headers: headers(accessToken),
+        body: JSON.stringify({ password }),
+      });
+      const data = await r.json();
+      return { data, error: r.ok ? null : (data.error_description || data.msg || data.error || "Could not update password") };
+    },
   };
 
   const from = (table) => {
@@ -362,10 +383,21 @@ const Login = ({ onAuth }) => {
   const [name, setName] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
 
   const submit = async () => {
-    setError(""); setLoading(true);
+    setError(""); setNotice(""); setLoading(true);
+    if (mode === "forgot") {
+      if (!email.trim()) { setError("Please enter your email address."); setLoading(false); return; }
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: `${window.location.origin}${window.location.pathname}`,
+      });
+      if (error) { setError(error); setLoading(false); return; }
+      setNotice("If an account exists for that email, a reset link is on its way. Check your inbox (and spam).");
+      setLoading(false);
+      return;
+    }
     if (mode === "login") {
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) { setError(error); setLoading(false); return; }
@@ -377,6 +409,98 @@ const Login = ({ onAuth }) => {
       onAuth(data.user || data);
     }
     setLoading(false);
+  };
+
+  const switchMode = (m) => { setMode(m); setError(""); setNotice(""); };
+
+  return (
+    <div style={{ minHeight: "100dvh", background: C.cream, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+      <div style={{ width: "100%", maxWidth: 400 }}>
+        <div style={{ textAlign: "center", marginBottom: 40 }}>
+          <div style={{ display: "inline-flex", alignItems: "baseline", gap: 6 }}>
+            <span style={{ fontFamily: "'Cormorant Garamond', Georgia, serif", fontSize: 52, fontWeight: 700, color: C.green }}>teki</span>
+            <span style={{ width: 10, height: 10, borderRadius: "50%", background: C.gold, display: "inline-block", marginBottom: 4 }} />
+          </div>
+          <div style={{ fontSize: 12, color: C.textLight, marginTop: 2, letterSpacing: "0.1em", textTransform: "uppercase" }}>Command Center</div>
+        </div>
+
+        <div style={{ background: C.white, borderRadius: 20, padding: "32px 28px", border: `1px solid ${C.border}`, boxShadow: "0 4px 32px rgba(0,0,0,0.07)" }}>
+          <div style={{ fontFamily: "'Cormorant Garamond', Georgia, serif", fontSize: 26, fontWeight: 700, color: C.green, marginBottom: mode === "forgot" ? 8 : 24 }}>
+            {mode === "login" ? "Welcome back" : mode === "signup" ? "Create account" : "Reset password"}
+          </div>
+          {mode === "forgot" && (
+            <div style={{ fontSize: 13, color: C.textMid, marginBottom: 20, lineHeight: 1.5 }}>
+              Enter your email and we'll send you a link to set a new password.
+            </div>
+          )}
+          {mode === "signup" && (
+            <input style={{ ...inputStyle, marginBottom: 12 }} placeholder="Display name" value={name} onChange={e => setName(e.target.value)} autoFocus />
+          )}
+          <input style={{ ...inputStyle, marginBottom: mode === "forgot" ? 8 : 12 }} type="email" placeholder="Email address" value={email} onChange={e => setEmail(e.target.value)} onKeyDown={e => mode === "forgot" && e.key === "Enter" && submit()} autoFocus={mode !== "signup"} />
+          {mode !== "forgot" && (
+            <>
+              <div style={{ position: "relative", marginBottom: 8 }}>
+                <input style={{ ...inputStyle, paddingRight: 46 }} type={showPw ? "text" : "password"} placeholder="Password"
+                  value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === "Enter" && submit()} />
+                <button onClick={() => setShowPw(p => !p)} style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: C.textLight }}>
+                  <Icon name={showPw ? "eyeoff" : "eye"} size={16} />
+                </button>
+              </div>
+              {mode === "login" && (
+                <div style={{ textAlign: "right", marginBottom: 8 }}>
+                  <button onClick={() => switchMode("forgot")} style={{ background: "none", border: "none", color: C.textMid, cursor: "pointer", fontSize: 12, padding: 0 }}>
+                    Forgot password?
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+          {error && <div style={{ fontSize: 13, color: C.red, background: C.red + "10", borderRadius: 8, padding: "8px 12px", marginBottom: 8 }}>{String(error)}</div>}
+          {notice && <div style={{ fontSize: 13, color: C.green, background: C.green + "10", borderRadius: 8, padding: "8px 12px", marginBottom: 8 }}>{notice}</div>}
+          <button style={{ ...btnPrimary, opacity: loading ? 0.7 : 1 }} onClick={submit} disabled={loading}>
+            {loading ? "Please wait..." : mode === "login" ? "Sign in" : mode === "signup" ? "Create account" : "Send reset link"}
+          </button>
+          <div style={{ textAlign: "center", marginTop: 16, fontSize: 13, color: C.textMid }}>
+            {mode === "forgot" ? (
+              <button onClick={() => switchMode("login")} style={{ background: "none", border: "none", color: C.green, fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
+                ← Back to sign in
+              </button>
+            ) : (
+              <>
+                {mode === "login" ? "No account? " : "Have an account? "}
+                <button onClick={() => switchMode(mode === "login" ? "signup" : "login")} style={{ background: "none", border: "none", color: C.green, fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
+                  {mode === "login" ? "Sign up" : "Sign in"}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+        <div style={{ textAlign: "center", marginTop: 20, fontSize: 11, color: C.textLight }}>Data is private to your account</div>
+      </div>
+    </div>
+  );
+};
+
+// ═════════════════════════════════════════════════════════════════════════════
+// RESET PASSWORD — shown when the user arrives via the recovery email link
+// (URL hash contains #type=recovery&access_token=...)
+// ═════════════════════════════════════════════════════════════════════════════
+const ResetPassword = ({ accessToken, onDone }) => {
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [showPw, setShowPw] = useState(false);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const submit = async () => {
+    setError("");
+    if (password.length < 6) { setError("Password must be at least 6 characters."); return; }
+    if (password !== confirm) { setError("Passwords don't match."); return; }
+    setLoading(true);
+    const { error } = await supabase.auth.updateUserPassword(password, accessToken);
+    if (error) { setError(error); setLoading(false); return; }
+    setDone(true); setLoading(false);
   };
 
   return (
@@ -392,31 +516,38 @@ const Login = ({ onAuth }) => {
 
         <div style={{ background: C.white, borderRadius: 20, padding: "32px 28px", border: `1px solid ${C.border}`, boxShadow: "0 4px 32px rgba(0,0,0,0.07)" }}>
           <div style={{ fontFamily: "'Cormorant Garamond', Georgia, serif", fontSize: 26, fontWeight: 700, color: C.green, marginBottom: 24 }}>
-            {mode === "login" ? "Welcome back" : "Create account"}
+            {done ? "Password updated" : "Set a new password"}
           </div>
-          {mode === "signup" && (
-            <input style={{ ...inputStyle, marginBottom: 12 }} placeholder="Display name" value={name} onChange={e => setName(e.target.value)} autoFocus />
+          {done ? (
+            <>
+              <div style={{ fontSize: 14, color: C.textMid, marginBottom: 20, lineHeight: 1.5 }}>
+                Your password has been changed. You can now sign in with your new password.
+              </div>
+              <button style={btnPrimary} onClick={onDone}>Go to sign in</button>
+            </>
+          ) : (
+            <>
+              <div style={{ position: "relative", marginBottom: 12 }}>
+                <input style={{ ...inputStyle, paddingRight: 46 }} type={showPw ? "text" : "password"} placeholder="New password"
+                  value={password} onChange={e => setPassword(e.target.value)} autoFocus />
+                <button onClick={() => setShowPw(p => !p)} style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: C.textLight }}>
+                  <Icon name={showPw ? "eyeoff" : "eye"} size={16} />
+                </button>
+              </div>
+              <input style={{ ...inputStyle, marginBottom: 8 }} type={showPw ? "text" : "password"} placeholder="Confirm new password"
+                value={confirm} onChange={e => setConfirm(e.target.value)} onKeyDown={e => e.key === "Enter" && submit()} />
+              {error && <div style={{ fontSize: 13, color: C.red, background: C.red + "10", borderRadius: 8, padding: "8px 12px", marginBottom: 8 }}>{String(error)}</div>}
+              <button style={{ ...btnPrimary, opacity: loading ? 0.7 : 1 }} onClick={submit} disabled={loading}>
+                {loading ? "Please wait..." : "Update password"}
+              </button>
+              <div style={{ textAlign: "center", marginTop: 16, fontSize: 13 }}>
+                <button onClick={onDone} style={{ background: "none", border: "none", color: C.green, fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
+                  ← Back to sign in
+                </button>
+              </div>
+            </>
           )}
-          <input style={{ ...inputStyle, marginBottom: 12 }} type="email" placeholder="Email address" value={email} onChange={e => setEmail(e.target.value)} autoFocus={mode === "login"} />
-          <div style={{ position: "relative", marginBottom: 8 }}>
-            <input style={{ ...inputStyle, paddingRight: 46 }} type={showPw ? "text" : "password"} placeholder="Password"
-              value={password} onChange={e => setPassword(e.target.value)} onKeyDown={e => e.key === "Enter" && submit()} />
-            <button onClick={() => setShowPw(p => !p)} style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: C.textLight }}>
-              <Icon name={showPw ? "eyeoff" : "eye"} size={16} />
-            </button>
-          </div>
-          {error && <div style={{ fontSize: 13, color: C.red, background: C.red + "10", borderRadius: 8, padding: "8px 12px", marginBottom: 8 }}>{String(error)}</div>}
-          <button style={{ ...btnPrimary, opacity: loading ? 0.7 : 1 }} onClick={submit} disabled={loading}>
-            {loading ? "Please wait..." : mode === "login" ? "Sign in" : "Create account"}
-          </button>
-          <div style={{ textAlign: "center", marginTop: 16, fontSize: 13, color: C.textMid }}>
-            {mode === "login" ? "No account? " : "Have an account? "}
-            <button onClick={() => { setMode(m => m === "login" ? "signup" : "login"); setError(""); }} style={{ background: "none", border: "none", color: C.green, fontWeight: 700, cursor: "pointer", fontSize: 13 }}>
-              {mode === "login" ? "Sign up" : "Sign in"}
-            </button>
-          </div>
         </div>
-        <div style={{ textAlign: "center", marginTop: 20, fontSize: 11, color: C.textLight }}>Data is private to your account</div>
       </div>
     </div>
   );
@@ -2356,6 +2487,18 @@ const IcalModal = ({ user, onClose, onSaved }) => {
 };
 export default function Teki() {
   const [user, setUser] = useState(null);
+  const [recoveryToken, setRecoveryToken] = useState(() => {
+    // Supabase redirects password-reset links back with the token in the URL hash:
+    // #access_token=...&type=recovery&...  Detect it before rendering anything else.
+    try {
+      const hash = window.location.hash.replace(/^#/, "");
+      const params = new URLSearchParams(hash);
+      if (params.get("type") === "recovery" && params.get("access_token")) {
+        return params.get("access_token");
+      }
+    } catch {}
+    return null;
+  });
   const [appLoading, setAppLoading] = useState(true);
   const [tab, setTab] = useState("home");
   const [tasks, setTasks] = useState([]);
@@ -2452,6 +2595,16 @@ export default function Teki() {
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
     body { margin: 0; font-family: 'DM Sans', sans-serif; }
   `;
+
+  if (recoveryToken) {
+    const clearRecovery = () => {
+      // Wipe the token from the URL so a refresh doesn't re-trigger the flow.
+      try { window.history.replaceState(null, "", window.location.pathname + window.location.search); } catch {}
+      setRecoveryToken(null);
+      setUser(null);
+    };
+    return <><style>{globalStyles}</style><ResetPassword accessToken={recoveryToken} onDone={clearRecovery} /></>;
+  }
 
   if (appLoading) return (
     <>
