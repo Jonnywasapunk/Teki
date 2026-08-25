@@ -4,7 +4,7 @@
 // Replace SUPABASE_URL and SUPABASE_ANON_KEY with your project credentials
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
 // ── SUPABASE CONFIG ── Replace these two values after creating your project ──
 const SUPABASE_URL  = "https://sozhjtedrwlvusmlxxer.supabase.co";
@@ -966,9 +966,44 @@ const Tasks = ({ tasks, setTasks, user }) => {
 const BLANK_PERSON = { name: "", role: "", email: "", phone: "", whatsapp: "", telegram: "" };
 const BLANK_FORM = { name: "", company: "", project: "other", status: "New", notes: "", amount: "", currency: "USD", is_referral: false, referrer_name: "", referrer_commission: "", engagement_letter_url: "", engagement_letter_status: "Pending", engagement_amount: "" };
 
-const CRM = ({ contacts, setContacts, user }) => {
+const CRM = ({ contacts, setContacts, user, deepLinkContactId, onDeepLinkHandled }) => {
   const [modal, setModal] = useState(false);
   const [detail, setDetail] = useState(null);
+  const deepLinkHandled = useRef(false);
+
+  // Deep link: /contacts/:id opens straight to that client's detail.
+  // Runs once. Tries the already-loaded list first, then fetches the row
+  // directly (covers clients not in the current user's own list).
+  useEffect(() => {
+    if (!deepLinkContactId || deepLinkHandled.current) return;
+    deepLinkHandled.current = true;
+    const finish = () => {
+      try { window.history.replaceState(null, "", "/"); } catch {}
+      onDeepLinkHandled?.();
+    };
+    const existing = contacts.find(c => c.id === deepLinkContactId);
+    if (existing) { setDetail(existing); finish(); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await getValidToken();
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/contacts?id=eq.${deepLinkContactId}&select=*`, {
+          headers: { "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}` },
+        });
+        const rows = await res.json().catch(() => []);
+        if (cancelled) return;
+        if (Array.isArray(rows) && rows[0]) setDetail(rows[0]);
+        else alert("That client could not be found — it may have been deleted or you may not have access to it.");
+      } catch {
+        if (!cancelled) alert("Could not load that client. Please try again.");
+      } finally {
+        if (!cancelled) finish();
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deepLinkContactId]);
+
   const [form, setForm] = useState(BLANK_FORM);
   const [filter, setFilter] = useState("all");
   const [outreachNote, setOutreachNote] = useState("");
@@ -2501,6 +2536,14 @@ export default function Teki() {
   });
   const [appLoading, setAppLoading] = useState(true);
   const [tab, setTab] = useState("home");
+  const [deepLinkContactId, setDeepLinkContactId] = useState(() => {
+    // A shared link like /contacts/<uuid> (e.g. from Teki Prospect) should open
+    // that client. Capture the id before anything rewrites the URL.
+    try {
+      const m = window.location.pathname.match(/^\/contacts\/([^/?#]+)/);
+      return m ? m[1] : null;
+    } catch { return null; }
+  });
   const [tasks, setTasks] = useState([]);
   const [contacts, setContacts] = useState([]);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -2575,6 +2618,12 @@ export default function Teki() {
     });
   }, [user]);
 
+  // When arriving via /contacts/:id, jump to the Pipeline tab so the CRM
+  // (which handles the actual open) is mounted. Waits for login if needed.
+  useEffect(() => {
+    if (deepLinkContactId && user) setTab("pipeline");
+  }, [deepLinkContactId, user]);
+
   const handleLogout = async () => {
     await supabase.auth.signOut();
     setUser(null); setTasks([]); setContacts([]);
@@ -2628,7 +2677,7 @@ export default function Teki() {
     <>
       {tab === "home"     && <Dashboard tasks={tasks} contacts={contacts} user={normalizedUser} />}
       {tab === "tasks"    && <Tasks tasks={tasks} setTasks={setTasks} user={normalizedUser} />}
-      {tab === "pipeline" && <CRM contacts={contacts} setContacts={setContacts} user={normalizedUser} />}
+      {tab === "pipeline" && <CRM contacts={contacts} setContacts={setContacts} user={normalizedUser} deepLinkContactId={deepLinkContactId} onDeepLinkHandled={() => setDeepLinkContactId(null)} />}
       {tab === "projects" && <ProjectsView tasks={tasks} contacts={contacts} />}
       {tab === "calendar" && <Calendar user={normalizedUser} />}
       {tab === "billing"  && (isAdmin || isBilling) && <Billing contacts={contacts} user={normalizedUser} />}
