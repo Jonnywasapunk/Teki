@@ -195,10 +195,10 @@ const PROJECTS = [
   { id: "other",    name: "Other",                     color: C.textLight },
 ];
 
-const STATUSES = ["New", "Contacted", "Follow-up", "Qualified", "Closed", "Not interested"];
+const STATUSES = ["New", "Contacted", "Follow-up", "Qualified", "Pending Funding", "Closed", "Not interested"];
 const STATUS_COLORS = {
   "New": C.textLight, "Contacted": C.green, "Follow-up": C.gold,
-  "Qualified": C.greenLight, "Closed": C.textMid, "Not interested": C.red,
+  "Qualified": C.greenLight, "Pending Funding": "#7B5EA7", "Closed": C.textMid, "Not interested": C.red,
 };
 
 // ─── RESPONSIVE HOOK ─────────────────────────────────────────────────────────
@@ -235,6 +235,7 @@ const Icon = ({ name, size = 18, color = "currentColor" }) => {
     file:      "M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z M14 2v6h6 M16 13H8 M16 17H8 M10 9H8",
     link:      "M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71 M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71",
     invoice:   "M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z M14 2v6h6 M12 18v-6 M9 15h6",
+    repeat:    "M17 1l4 4-4 4 M3 11V9a4 4 0 014-4h14 M7 23l-4-4 4-4 M21 13v2a4 4 0 01-4 4H3",
     users2:    "M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2 M12 7a4 4 0 100 8 4 4 0 000-8z M22 21v-2a4 4 0 00-3-3.87 M16 3.13a4 4 0 010 7.75",
     alert:     "M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z M12 9v4 M12 17h.01",
     calendar:  "M19 4H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2V6a2 2 0 00-2-2z M16 2v4 M8 2v4 M3 10h18",
@@ -591,6 +592,35 @@ const Dashboard = ({ tasks, contacts, user }) => {
           </div>
         ))}
       </div>
+
+      {/* Pipeline breakdown by status */}
+      {contacts.length > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>Pipeline by Status</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))", gap: 10 }}>
+            {STATUSES.map(s => {
+              const deals = contacts.filter(c => c.status === s);
+              if (deals.length === 0) return null;
+              const total = deals.reduce((sum, d) => sum + Number(d.amount || 0), 0);
+              const color = STATUS_COLORS[s] || C.textLight;
+              return (
+                <div key={s} style={{ background: C.white, border: `1px solid ${color}33`, borderRadius: 12, padding: "12px 14px", position: "relative", overflow: "hidden" }}>
+                  <div style={{ position: "absolute", top: 0, left: 0, width: 3, height: "100%", background: color }} />
+                  <div style={{ fontSize: 10, color, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{s}</div>
+                  <div style={{ fontSize: 20, fontWeight: 800, color: C.text, lineHeight: 1 }}>
+                    {deals.length} <span style={{ fontSize: 11, color: C.textLight, fontWeight: 500 }}>{deals.length === 1 ? "deal" : "deals"}</span>
+                  </div>
+                  {total > 0 && (
+                    <div style={{ fontSize: 13, color: C.textMid, marginTop: 4, fontFamily: "'Cormorant Garamond', serif", fontWeight: 700 }}>
+                      ${total.toLocaleString()}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {pending.slice(0, 5).length > 0 && (
         <div style={{ marginBottom: 24 }}>
@@ -964,7 +994,7 @@ const Tasks = ({ tasks, setTasks, user }) => {
 // CRM / PIPELINE
 // ═════════════════════════════════════════════════════════════════════════════
 const BLANK_PERSON = { name: "", role: "", email: "", phone: "", whatsapp: "", telegram: "" };
-const BLANK_FORM = { name: "", company: "", project: "other", status: "New", notes: "", amount: "", currency: "USD", is_referral: false, referrer_name: "", referrer_commission: "", engagement_letter_url: "", engagement_letter_status: "Pending", engagement_amount: "" };
+const BLANK_FORM = { name: "", company: "", project: "other", status: "New", notes: "", amount: "", currency: "USD", is_referral: false, referrer_name: "", referrer_commission: "", engagement_letter_url: "", engagement_letter_status: "Pending", engagement_amount: "", parent_id: "" };
 
 const CRM = ({ contacts, setContacts, user, deepLinkContactId, onDeepLinkHandled }) => {
   const [modal, setModal] = useState(false);
@@ -1005,20 +1035,69 @@ const CRM = ({ contacts, setContacts, user, deepLinkContactId, onDeepLinkHandled
   }, [deepLinkContactId]);
 
   const [form, setForm] = useState(BLANK_FORM);
+  const [amountTouched, setAmountTouched] = useState(false);
+  const [parents, setParents] = useState([]);        // shared parent companies: [{id, name}]
+  const [newParentName, setNewParentName] = useState("");   // New Deal: typed new parent
+  const [editNewParentName, setEditNewParentName] = useState(""); // Edit Deal: typed new parent
   const [filter, setFilter] = useState("all");
+
+  // Load the shared parent-company list (visible to every signed-in user).
+  const loadParents = async () => {
+    try {
+      const token = await getValidToken();
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/deal_parents?select=id,name&order=name.asc`, {
+        headers: { "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}` },
+      });
+      const rows = await res.json().catch(() => []);
+      if (Array.isArray(rows)) setParents(rows);
+    } catch { /* non-fatal: grouping just won't show until reload */ }
+  };
+  useEffect(() => { loadParents(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+
+  // Resolve a parent selection to an id. `sel` is an existing id, "" (none), or
+  // "__new__" meaning "create from `typedName`". Dedupes case-insensitively so
+  // two teammates typing the same name share one parent row.
+  const resolveParentId = async (sel, typedName) => {
+    if (sel !== "__new__") return sel || null;
+    const name = (typedName || "").trim();
+    if (!name) return null;
+    const existing = parents.find(p => p.name.trim().toLowerCase() === name.toLowerCase());
+    if (existing) return existing.id;
+    const token = await getValidToken();
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/deal_parents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}`, "Prefer": "return=representation" },
+      body: JSON.stringify({ name, created_by: user.id }),
+    });
+    if (res.ok) {
+      const rows = await res.json().catch(() => []);
+      const created = Array.isArray(rows) ? rows[0] : rows;
+      if (created?.id) { setParents(prev => [...prev, created].sort((a, b) => a.name.localeCompare(b.name))); return created.id; }
+    } else if (res.status === 409) {
+      // Unique-index conflict: someone created it first — refetch and match.
+      await loadParents();
+      const again = (parents.find(p => p.name.trim().toLowerCase() === name.toLowerCase()));
+      if (again) return again.id;
+    }
+    alert("Could not create the parent company. The deal was not saved.");
+    return "__error__";
+  };
   const [outreachNote, setOutreachNote] = useState("");
   const [addingPerson, setAddingPerson] = useState(false);
   const [personForm, setPersonForm] = useState(BLANK_PERSON);
   const [engLetterFile, setEngLetterFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [editDealMode, setEditDealMode] = useState(false);
-  const [editDealForm, setEditDealForm] = useState({ name: "", company: "", project: "other", amount: "", currency: "USD", notes: "", is_referral: false, referrer_name: "", referrer_commission: "" });
+  const [editDealForm, setEditDealForm] = useState({ name: "", company: "", project: "other", amount: "", currency: "USD", notes: "", is_referral: false, referrer_name: "", referrer_commission: "", parent_id: "" });
 
   const saveEditDeal = async () => {
     if (!editDealForm.name.trim()) { alert("Company name is required."); return; }
     if (!editDealForm.amount) { alert("Amount is required."); return; }
+    const parentId = await resolveParentId(editDealForm.parent_id, editNewParentName);
+    if (parentId === "__error__") return;
     const updates = {
       name: editDealForm.name,
+      parent_id: parentId,
       company: editDealForm.company || null,
       project: editDealForm.project,
       amount: editDealForm.amount ? Number(editDealForm.amount) : null,
@@ -1066,9 +1145,12 @@ const CRM = ({ contacts, setContacts, user, deepLinkContactId, onDeepLinkHandled
 
   const addContact = async () => {
     if (!form.name.trim()) { alert("Please enter a company name."); return; }
-    if (!form.amount) { alert("Deal amount is required."); return; }
+    if (!form.amount) { setAmountTouched(true); alert("Deal amount is required."); return; }
+    const parentId = await resolveParentId(form.parent_id, newParentName);
+    if (parentId === "__error__") return;
     const cleanRow = {
       name: form.name,
+      parent_id: parentId,
       company: form.company || null,
       project: form.project,
       status: form.status,
@@ -1104,7 +1186,7 @@ const CRM = ({ contacts, setContacts, user, deepLinkContactId, onDeepLinkHandled
     });
     const refreshed = await res.json();
     if (Array.isArray(refreshed)) setContacts(refreshed);
-    setModal(false); setForm(BLANK_FORM);
+    setModal(false); setForm(BLANK_FORM); setAmountTouched(false); setNewParentName("");
   };
 
   const updateStatus = async (id, status) => {
@@ -1184,11 +1266,58 @@ const CRM = ({ contacts, setContacts, user, deepLinkContactId, onDeepLinkHandled
 
   const fmtAmount = (c) => c.amount ? `${c.currency || "USD"} ${Number(c.amount).toLocaleString()}` : null;
 
+  const renderCard = (c) => {
+    const proj = PROJECTS.find(p => p.id === c.project);
+    const peopleCount = (c.people || []).length;
+    const amt = fmtAmount(c);
+    return (
+      <div key={c.id} onClick={() => { setDetail(c); setOutreachNote(""); setAddingPerson(false); setPersonForm(BLANK_PERSON); setEngLetterFile(null); }}
+        style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "14px 16px", marginBottom: 10, cursor: "pointer", opacity: c.is_closed_business ? 0.6 : 1 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ width: 40, height: 40, borderRadius: 10, background: (proj?.color || C.green) + "20", display: "flex", alignItems: "center", justifyContent: "center", color: proj?.color || C.green, fontWeight: 800, fontSize: 16, flexShrink: 0 }}>{(c.name || "?")[0].toUpperCase()}</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 600, fontSize: 15, color: C.text }}>{c.name}</div>
+            <div style={{ fontSize: 12, color: C.textLight, display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {c.company && <span>{c.company}</span>}
+              {amt && <span style={{ color: C.green, fontWeight: 700 }}>{amt}</span>}
+              {c.is_referral && <span style={{ color: C.gold, fontWeight: 600 }}>↩ Referral</span>}
+              {peopleCount > 0 && <span>{peopleCount} contact{peopleCount !== 1 ? "s" : ""}</span>}
+            </div>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+            {c.is_closed_business
+              ? <Badge color={C.red} label="🚫 Closed" />
+              : <Badge color={STATUS_COLORS[c.status] || C.textLight} label={c.status} />}
+            {proj && <span style={{ fontSize: 10, color: C.textLight }}>{proj.name.split(" ")[0]}</span>}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // Group the filtered deals by parent company for review. Named parents first
+  // (alphabetical), then ungrouped. When nothing is grouped, headers are hidden
+  // so the list looks exactly as before.
+  const dealGroups = (() => {
+    const byParent = new Map();
+    filtered.forEach(c => {
+      const key = c.parent_id && parents.some(p => p.id === c.parent_id) ? c.parent_id : "__none__";
+      if (!byParent.has(key)) byParent.set(key, []);
+      byParent.get(key).push(c);
+    });
+    const named = [...byParent.entries()]
+      .filter(([k]) => k !== "__none__")
+      .map(([id, deals]) => ({ id, name: parents.find(p => p.id === id)?.name || "Parent", deals }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const none = byParent.get("__none__") || [];
+    return { named, none };
+  })();
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
         <span style={{ fontFamily: "'Cormorant Garamond', Georgia, serif", fontSize: 24, fontWeight: 700, color: C.green }}>Pipeline</span>
-        <button onClick={() => setModal(true)} style={{ background: C.green, color: C.cream, border: "none", borderRadius: 10, padding: "8px 16px", fontWeight: 700, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+        <button onClick={() => { setAmountTouched(false); setNewParentName(""); loadParents(); setModal(true); }} style={{ background: C.green, color: C.cream, border: "none", borderRadius: 10, padding: "8px 16px", fontWeight: 700, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
           <Icon name="plus" size={16} color={C.cream} /> Add
         </button>
       </div>
@@ -1205,47 +1334,55 @@ const CRM = ({ contacts, setContacts, user, deepLinkContactId, onDeepLinkHandled
 
       {filtered.length === 0 && <div style={{ textAlign: "center", color: C.textLight, padding: "40px 0", fontSize: 14 }}>No deals yet</div>}
 
-      {filtered.map(c => {
-        const proj = PROJECTS.find(p => p.id === c.project);
-        const peopleCount = (c.people || []).length;
-        const amt = fmtAmount(c);
+      {dealGroups.named.map(g => {
+        const total = g.deals.reduce((sum, c) => sum + (Number(c.amount) || 0), 0);
         return (
-          <div key={c.id} onClick={() => { setDetail(c); setOutreachNote(""); setAddingPerson(false); setPersonForm(BLANK_PERSON); setEngLetterFile(null); }}
-            style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "14px 16px", marginBottom: 10, cursor: "pointer", opacity: c.is_closed_business ? 0.6 : 1 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{ width: 40, height: 40, borderRadius: 10, background: (proj?.color || C.green) + "20", display: "flex", alignItems: "center", justifyContent: "center", color: proj?.color || C.green, fontWeight: 800, fontSize: 16, flexShrink: 0 }}>{(c.name || "?")[0].toUpperCase()}</div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontWeight: 600, fontSize: 15, color: C.text }}>{c.name}</div>
-                <div style={{ fontSize: 12, color: C.textLight, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {c.company && <span>{c.company}</span>}
-                  {amt && <span style={{ color: C.green, fontWeight: 700 }}>{amt}</span>}
-                  {c.is_referral && <span style={{ color: C.gold, fontWeight: 600 }}>↩ Referral</span>}
-                  {peopleCount > 0 && <span>{peopleCount} contact{peopleCount !== 1 ? "s" : ""}</span>}
-                </div>
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
-                {c.is_closed_business
-                  ? <Badge color={C.red} label="🚫 Closed" />
-                  : <Badge color={STATUS_COLORS[c.status] || C.textLight} label={c.status} />}
-                {proj && <span style={{ fontSize: 10, color: C.textLight }}>{proj.name.split(" ")[0]}</span>}
-              </div>
+          <div key={g.id} style={{ marginBottom: 18 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "4px 2px 10px" }}>
+              <span style={{ fontSize: 12, fontWeight: 800, color: C.gold }}>▲ {g.name}</span>
+              <span style={{ fontSize: 11, color: C.textLight }}>{g.deals.length} deal{g.deals.length !== 1 ? "s" : ""}{total > 0 ? ` · ${total.toLocaleString()}` : ""}</span>
+              <div style={{ flex: 1, height: 1, background: C.border }} />
             </div>
+            {g.deals.map(renderCard)}
           </div>
         );
       })}
 
+      {dealGroups.none.length > 0 && (
+        dealGroups.named.length > 0 ? (
+          <div style={{ marginBottom: 18 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "4px 2px 10px" }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: C.textLight }}>Ungrouped</span>
+              <div style={{ flex: 1, height: 1, background: C.border }} />
+            </div>
+            {dealGroups.none.map(renderCard)}
+          </div>
+        ) : (
+          dealGroups.none.map(renderCard)
+        )
+      )}
+
       {/* Add deal modal */}
-      <Modal open={modal} onClose={() => setModal(false)} title="New Deal">
+      <Modal open={modal} onClose={() => { setModal(false); setAmountTouched(false); setNewParentName(""); }} title="New Deal">
         <input style={{ ...inputStyle, marginBottom: 10 }} placeholder="Company / Organization *" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} autoFocus />
         <input style={{ ...inputStyle, marginBottom: 10 }} placeholder="Industry / description" value={form.company} onChange={e => setForm(f => ({ ...f, company: e.target.value }))} />
         <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: 8, marginBottom: 4 }}>
           <select style={selectStyle} value={form.currency} onChange={e => setForm(f => ({ ...f, currency: e.target.value }))}>
             {["USD","EUR","GBP","BRL","PYG","ARS"].map(c => <option key={c}>{c}</option>)}
           </select>
-          <input style={{ ...inputStyle, borderColor: !form.amount ? C.red + "88" : C.border }} type="number" placeholder="Deal amount *" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} />
+          <input style={{ ...inputStyle, borderColor: (amountTouched && !form.amount) ? C.red + "88" : C.border }} type="number" placeholder="Deal amount *" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} onBlur={() => setAmountTouched(true)} />
         </div>
-        {!form.amount && <div style={{ fontSize: 11, color: C.red, marginBottom: 8 }}>Amount is required</div>}
+        {amountTouched && !form.amount && <div style={{ fontSize: 11, color: C.red, marginBottom: 8 }}>Amount is required</div>}
         <div style={{ marginBottom: 10 }} />
+        <label style={{ fontSize: 11, fontWeight: 700, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.08em" }}>Parent company (optional)</label>
+        <select style={{ ...selectStyle, marginTop: 4, marginBottom: form.parent_id === "__new__" ? 8 : 10 }} value={form.parent_id} onChange={e => setForm(f => ({ ...f, parent_id: e.target.value }))}>
+          <option value="">(No parent)</option>
+          {parents.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          <option value="__new__">＋ New parent…</option>
+        </select>
+        {form.parent_id === "__new__" && (
+          <input style={{ ...inputStyle, marginBottom: 10 }} placeholder="New parent company name" value={newParentName} onChange={e => setNewParentName(e.target.value)} autoFocus />
+        )}
         <select style={{ ...selectStyle, marginBottom: 10 }} value={form.project} onChange={e => setForm(f => ({ ...f, project: e.target.value }))}>
           {PROJECTS.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
@@ -1278,6 +1415,9 @@ const CRM = ({ contacts, setContacts, user, deepLinkContactId, onDeepLinkHandled
                     {detail.company && <div style={{ fontSize: 13, color: C.textMid, marginBottom: 6 }}>{detail.company}</div>}
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
                       {proj && <Badge color={proj.color} label={proj.name} />}
+                      {detail.parent_id && parents.find(p => p.id === detail.parent_id) && (
+                        <Badge color={C.gold} label={`▲ ${parents.find(p => p.id === detail.parent_id).name}`} />
+                      )}
                       {detail.amount && <span style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 20, fontWeight: 700, color: C.green }}>{detail.currency || "USD"} {Number(detail.amount).toLocaleString()}</span>}
                       {detail.is_referral && <Badge color={C.gold} label={`↩ ${detail.referrer_name || "Referral"} · ${detail.referrer_commission || "TBD"}`} />}
                       {detail.is_closed_business && <Badge color={C.red} label="🚫 Permanently Closed" />}
@@ -1298,7 +1438,10 @@ const CRM = ({ contacts, setContacts, user, deepLinkContactId, onDeepLinkHandled
                       name: detail.name || "", company: detail.company || "", project: detail.project || "other",
                       amount: detail.amount || "", currency: detail.currency || "USD", notes: detail.notes || "",
                       is_referral: !!detail.is_referral, referrer_name: detail.referrer_name || "", referrer_commission: detail.referrer_commission || "",
+                      parent_id: detail.parent_id || "",
                     });
+                    setEditNewParentName("");
+                    loadParents();
                     setEditDealMode(true);
                   }} style={{ ...btnSecondary, marginBottom: 20, marginTop: 0 }}>
                     ✏️ Edit Deal
@@ -1318,6 +1461,14 @@ const CRM = ({ contacts, setContacts, user, deepLinkContactId, onDeepLinkHandled
                   <select style={{ ...selectStyle, marginBottom: 8 }} value={editDealForm.project} onChange={e => setEditDealForm(f => ({ ...f, project: e.target.value }))}>
                     {PROJECTS.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                   </select>
+                  <select style={{ ...selectStyle, marginBottom: editDealForm.parent_id === "__new__" ? 6 : 8 }} value={editDealForm.parent_id} onChange={e => setEditDealForm(f => ({ ...f, parent_id: e.target.value }))}>
+                    <option value="">(No parent company)</option>
+                    {parents.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    <option value="__new__">＋ New parent…</option>
+                  </select>
+                  {editDealForm.parent_id === "__new__" && (
+                    <input style={{ ...inputStyle, marginBottom: 8 }} placeholder="New parent company name" value={editNewParentName} onChange={e => setEditNewParentName(e.target.value)} />
+                  )}
                   <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, padding: "8px 12px", background: C.white, borderRadius: 10 }}>
                     <input type="checkbox" id="edit_is_ref" checked={editDealForm.is_referral} onChange={e => setEditDealForm(f => ({ ...f, is_referral: e.target.checked }))} style={{ width: 16, height: 16, cursor: "pointer" }} />
                     <label htmlFor="edit_is_ref" style={{ fontSize: 14, color: C.text, cursor: "pointer", fontWeight: 500 }}>This is a referral</label>
@@ -1644,6 +1795,222 @@ const Billing = ({ contacts, user }) => {
         </select>
         <textarea style={{ ...inputStyle, minHeight: 60, resize: "vertical", marginBottom: 8 }} placeholder="Notes" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
         <button style={btnPrimary} onClick={addInvoice}>Create Invoice</button>
+      </Modal>
+    </div>
+  );
+};
+
+// ═════════════════════════════════════════════════════════════════════════════
+// RETAINERS — recurring client payments to follow up on
+// ═════════════════════════════════════════════════════════════════════════════
+const FREQUENCIES = ["Weekly", "Bi-weekly", "Monthly", "Quarterly", "Annual"];
+const FREQ_DAYS = { "Weekly": 7, "Bi-weekly": 14, "Monthly": 30, "Quarterly": 91, "Annual": 365 };
+
+const advanceDate = (dateStr, freq) => {
+  const d = new Date(dateStr);
+  if (freq === "Monthly") { d.setMonth(d.getMonth() + 1); }
+  else if (freq === "Quarterly") { d.setMonth(d.getMonth() + 3); }
+  else if (freq === "Annual") { d.setFullYear(d.getFullYear() + 1); }
+  else { d.setDate(d.getDate() + (FREQ_DAYS[freq] || 30)); }
+  return d.toISOString().slice(0, 10);
+};
+
+const Retainers = ({ user }) => {
+  const [retainers, setRetainers] = useState([]);
+  const [modal, setModal] = useState(false);
+  const [form, setForm] = useState({ client: "", amount: "", currency: "USD", frequency: "Monthly", next_due: "", notes: "", status: "Active" });
+  const [filter, setFilter] = useState("active");
+
+  const loadRetainers = async () => {
+    const token = await getValidToken();
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/retainers?select=*&order=next_due.asc`, {
+      headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}` },
+    });
+    const data = await res.json();
+    if (Array.isArray(data)) setRetainers(data);
+  };
+
+  useEffect(() => { loadRetainers(); }, [user.id]);
+
+  const addRetainer = async () => {
+    if (!form.client.trim()) { alert("Client name is required."); return; }
+    if (!form.amount) { alert("Amount is required."); return; }
+    if (!form.next_due) { alert("Next payment date is required."); return; }
+    const row = {
+      client: form.client,
+      amount: form.amount ? Number(form.amount) : null,
+      currency: form.currency,
+      frequency: form.frequency,
+      next_due: form.next_due,
+      notes: form.notes || null,
+      status: form.status,
+      user_id: user.id,
+      created_at: new Date().toISOString(),
+    };
+    const token = await getValidToken();
+    const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/retainers`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}`, "Prefer": "return=minimal" },
+      body: JSON.stringify(row),
+    });
+    if (!insertRes.ok) { const err = await insertRes.text(); alert("Error saving retainer:\n" + err); return; }
+    await loadRetainers();
+    setModal(false); setForm({ client: "", amount: "", currency: "USD", frequency: "Monthly", next_due: "", notes: "", status: "Active" });
+  };
+
+  const markPaid = async (r) => {
+    const newDue = advanceDate(r.next_due, r.frequency);
+    const token = await getValidToken();
+    await fetch(`${SUPABASE_URL}/rest/v1/retainers?id=eq.${r.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}`, "Prefer": "return=minimal" },
+      body: JSON.stringify({ next_due: newDue, last_paid: new Date().toISOString().slice(0, 10) }),
+    });
+    setRetainers(prev => prev.map(x => x.id === r.id ? { ...x, next_due: newDue, last_paid: new Date().toISOString().slice(0, 10) } : x).sort((a, b) => new Date(a.next_due) - new Date(b.next_due)));
+  };
+
+  const toggleStatus = async (r) => {
+    const newStatus = r.status === "Active" ? "Paused" : "Active";
+    const token = await getValidToken();
+    await fetch(`${SUPABASE_URL}/rest/v1/retainers?id=eq.${r.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}`, "Prefer": "return=minimal" },
+      body: JSON.stringify({ status: newStatus }),
+    });
+    setRetainers(prev => prev.map(x => x.id === r.id ? { ...x, status: newStatus } : x));
+  };
+
+  const deleteRetainer = async (id) => {
+    if (!confirm("Delete this retainer?")) return;
+    const token = await getValidToken();
+    await fetch(`${SUPABASE_URL}/rest/v1/retainers?id=eq.${id}`, {
+      method: "DELETE",
+      headers: { "apikey": SUPABASE_ANON, "Authorization": `Bearer ${token}` },
+    });
+    setRetainers(prev => prev.filter(x => x.id !== id));
+  };
+
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const filtered = filter === "active" ? retainers.filter(r => r.status === "Active")
+    : filter === "paused" ? retainers.filter(r => r.status === "Paused")
+    : filter === "due" ? retainers.filter(r => r.status === "Active" && r.next_due && new Date(r.next_due) <= new Date(today.getTime() + 3 * 86400000))
+    : retainers;
+
+  const monthlyTotal = retainers.filter(r => r.status === "Active").reduce((sum, r) => {
+    const amt = Number(r.amount || 0);
+    const perMonth = r.frequency === "Weekly" ? amt * 4.33 : r.frequency === "Bi-weekly" ? amt * 2.17 : r.frequency === "Quarterly" ? amt / 3 : r.frequency === "Annual" ? amt / 12 : amt;
+    return sum + perMonth;
+  }, 0);
+
+  const dueSoonCount = retainers.filter(r => r.status === "Active" && r.next_due && new Date(r.next_due) <= new Date(today.getTime() + 3 * 86400000)).length;
+
+  const DueBadge = ({ dueDate }) => {
+    if (!dueDate) return null;
+    const d = new Date(dueDate); d.setHours(0, 0, 0, 0);
+    const diffDays = Math.round((d - today) / 86400000);
+    const overdue = diffDays < 0;
+    const soon = diffDays >= 0 && diffDays <= 3;
+    const color = overdue ? C.red : soon ? C.gold : C.greenLight;
+    const label = overdue ? `Overdue by ${Math.abs(diffDays)}d` : diffDays === 0 ? "Due today" : diffDays === 1 ? "Due tomorrow" : `Due in ${diffDays}d`;
+    return (
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, color, fontWeight: 700, background: color + "15", padding: "3px 9px", borderRadius: 5 }}>
+        <Icon name="clock" size={11} color={color} />{label}
+      </span>
+    );
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <span style={{ fontFamily: "'Cormorant Garamond', Georgia, serif", fontSize: 24, fontWeight: 700, color: C.green }}>Retainers</span>
+        <button onClick={() => setModal(true)} style={{ background: C.green, color: C.cream, border: "none", borderRadius: 10, padding: "8px 16px", fontWeight: 700, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+          <Icon name="plus" size={16} color={C.cream} /> Add
+        </button>
+      </div>
+
+      {/* Summary */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 20 }}>
+        {[
+          { label: "Active", value: retainers.filter(r => r.status === "Active").length, color: C.green, isMoney: false },
+          { label: "Due Soon", value: dueSoonCount, color: dueSoonCount > 0 ? C.gold : C.textLight, isMoney: false },
+          { label: "Est. Monthly", value: monthlyTotal, color: C.greenLight, isMoney: true },
+        ].map(s => (
+          <div key={s.label} style={{ background: C.white, borderRadius: 14, padding: "14px 12px", border: `1px solid ${s.color}33`, textAlign: "center" }}>
+            <div style={{ fontSize: 10, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{s.label}</div>
+            <div style={{ fontSize: s.isMoney ? 15 : 24, fontWeight: 800, color: s.color, fontFamily: s.isMoney ? "'Cormorant Garamond', serif" : "inherit" }}>
+              {s.isMoney ? `$${Math.round(s.value).toLocaleString()}` : s.value}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Filter */}
+      <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, marginBottom: 16 }}>
+        {[
+          { id: "active", label: "Active" },
+          ...(dueSoonCount > 0 ? [{ id: "due", label: `⏰ Due Soon (${dueSoonCount})` }] : []),
+          { id: "paused", label: "Paused" },
+          { id: "all", label: "All" },
+        ].map(f => (
+          <button key={f.id} onClick={() => setFilter(f.id)} style={{
+            background: filter === f.id ? (f.id === "due" ? C.gold : C.green) : C.white,
+            color: filter === f.id ? (f.id === "due" ? C.text : C.cream) : f.id === "due" ? C.gold : C.textMid,
+            border: `1.5px solid ${filter === f.id ? (f.id === "due" ? C.gold : C.green) : f.id === "due" ? C.gold + "66" : C.border}`,
+            borderRadius: 20, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0,
+          }}>{f.label}</button>
+        ))}
+      </div>
+
+      {filtered.length === 0 && <div style={{ textAlign: "center", color: C.textLight, padding: "40px 0", fontSize: 14 }}>No retainers here</div>}
+
+      {filtered.map(r => (
+        <div key={r.id} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 14, padding: "14px 16px", marginBottom: 10, opacity: r.status === "Paused" ? 0.6 : 1 }}>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+            <div style={{ width: 40, height: 40, borderRadius: 10, background: "#7B5EA7" + "18", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              <Icon name="repeat" size={18} color="#7B5EA7" />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: 15, color: C.text }}>{r.client}</div>
+              <div style={{ fontSize: 12, color: C.textLight, marginTop: 2 }}>
+                <span style={{ color: C.green, fontWeight: 700 }}>{r.currency} {Number(r.amount).toLocaleString()}</span> · {r.frequency}
+                {r.last_paid && ` · Last paid ${new Date(r.last_paid).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`}
+              </div>
+              <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap", alignItems: "center" }}>
+                {r.status === "Active" ? <DueBadge dueDate={r.next_due} /> : <Badge color={C.textLight} label="Paused" />}
+              </div>
+              {r.notes && <div style={{ fontSize: 12, color: C.textMid, marginTop: 6 }}>{r.notes}</div>}
+              <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
+                {r.status === "Active" && (
+                  <button onClick={() => markPaid(r)} style={{ fontSize: 12, color: C.cream, background: C.green, border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontWeight: 700 }}>✓ Mark Paid</button>
+                )}
+                <button onClick={() => toggleStatus(r)} style={{ fontSize: 12, color: C.textMid, background: C.creamDark, border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontWeight: 600 }}>
+                  {r.status === "Active" ? "Pause" : "Resume"}
+                </button>
+              </div>
+            </div>
+            <button onClick={() => deleteRetainer(r.id)} style={{ background: "none", border: "none", cursor: "pointer", color: C.textLight, flexShrink: 0, padding: 4 }}>
+              <Icon name="trash" size={15} />
+            </button>
+          </div>
+        </div>
+      ))}
+
+      <Modal open={modal} onClose={() => setModal(false)} title="New Retainer">
+        <input style={{ ...inputStyle, marginBottom: 10 }} placeholder="Client / Company name *" value={form.client} onChange={e => setForm(f => ({ ...f, client: e.target.value }))} autoFocus />
+        <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: 8, marginBottom: 10 }}>
+          <select style={selectStyle} value={form.currency} onChange={e => setForm(f => ({ ...f, currency: e.target.value }))}>
+            {["USD","EUR","GBP","BRL","PYG","ARS"].map(c => <option key={c}>{c}</option>)}
+          </select>
+          <input style={inputStyle} type="number" placeholder="Amount *" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} />
+        </div>
+        <div style={{ fontSize: 12, color: C.textMid, fontWeight: 600, marginBottom: 6 }}>Frequency</div>
+        <select style={{ ...selectStyle, marginBottom: 10 }} value={form.frequency} onChange={e => setForm(f => ({ ...f, frequency: e.target.value }))}>
+          {FREQUENCIES.map(fq => <option key={fq}>{fq}</option>)}
+        </select>
+        <div style={{ fontSize: 12, color: C.textMid, fontWeight: 600, marginBottom: 6 }}>Next payment due *</div>
+        <input type="date" style={{ ...inputStyle, marginBottom: 10 }} value={form.next_due} onChange={e => setForm(f => ({ ...f, next_due: e.target.value }))} />
+        <textarea style={{ ...inputStyle, minHeight: 60, resize: "vertical", marginBottom: 8 }} placeholder="Notes (payment method, contact, etc.)" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
+        <button style={btnPrimary} onClick={addRetainer}>Add Retainer</button>
       </Modal>
     </div>
   );
@@ -2636,6 +3003,7 @@ export default function Teki() {
     { id: "projects", label: "Projects", icon: "briefcase" },
     { id: "calendar", label: "Calendar", icon: "calendar" },
     ...((isAdmin || isBilling) ? [{ id: "billing", label: "Billing", icon: "invoice" }] : []),
+    ...((isAdmin || isBilling) ? [{ id: "retainers", label: "Retainers", icon: "repeat" }] : []),
     ...(isAdmin ? [{ id: "admin", label: "Admin", icon: "eye" }] : []),
   ];
 
@@ -2681,6 +3049,7 @@ export default function Teki() {
       {tab === "projects" && <ProjectsView tasks={tasks} contacts={contacts} />}
       {tab === "calendar" && <Calendar user={normalizedUser} />}
       {tab === "billing"  && (isAdmin || isBilling) && <Billing contacts={contacts} user={normalizedUser} />}
+      {tab === "retainers" && (isAdmin || isBilling) && <Retainers user={normalizedUser} />}
       {tab === "admin"    && isAdmin && <AdminView allTasks={allTasks} allContacts={allContacts} allUsers={allUsers} setAllTasks={setAllTasks} setAllContacts={setAllContacts} />}
     </>
   );
